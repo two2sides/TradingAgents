@@ -1,1 +1,39 @@
-.
+# TradingAgents 运行时依赖
+# 与 pyproject.toml [project].dependencies 对齐；另补充源码直接引用、但未写入 pyproject 的包。
+# Python >= 3.10
+# 安装示例（请在你自己的 conda 环境中执行）:
+#   pip install -r requirements.txt
+# Bedrock 可选: pip install "langchain-aws>=1.5.0"
+# 开发可选: pip install "ruff>=0.15" "pytest>=8.0" "pytest-subtests>=0.13"
+
+# --- 核心框架 ---
+langchain-core>=0.3.81
+langchain-anthropic>=0.3.15
+langchain-experimental>=0.3.4
+langchain-google-genai>=4.0.0
+langchain-openai>=0.3.23
+langgraph>=0.4.8
+langgraph-checkpoint-sqlite>=2.0.0
+
+# --- 数据与量化工具 ---
+pandas>=2.3.0
+yfinance>=1.4.1
+stockstats>=0.6.5
+backtrader>=1.9.78.123
+python-dateutil>=2.8.0
+parsel>=1.10.0
+requests>=2.32.4
+pytz>=2025.2
+
+# --- 配置与工具 ---
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+typing-extensions>=4.14.0
+setuptools>=80.9.0
+tqdm>=4.67.1
+redis>=6.2.0
+
+# --- CLI / 交互（主体包也会被 CLI 引用；纯 API 用法可不强制，但仓库默认依赖包含）---
+typer>=0.21.0
+rich>=14.0.0
+questionary>=2.1.0
