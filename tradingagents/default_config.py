@@ -125,23 +125,18 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "ECB Bank of England BOJ central bank policy",
         "oil commodities supply chain energy",
     ],
-    # Data vendor configuration
-    # Category-level configuration (default for all tools in category).
-    # The configured value is the exact vendor chain — requests are NOT silently
-    # routed to vendors you didn't choose. For ordered fallback, list several,
-    # e.g. "yfinance,alpha_vantage". "default" uses all available vendors.
+    # Data vendors — ONE active source per category (this install's working path).
+    # Other implementations may still exist in code but are not selected here.
     "data_vendors": {
-        "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
-        "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-        "fundamental_data": "yfinance",      # Options: alpha_vantage, yfinance
-        "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-        "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
-        "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+        "core_stock_apis": "yahoo_chart",      # OHLCV: direct Chart JSON (not yfinance lib)
+        "technical_indicators": "stockstats",  # Local indicators on the same OHLCV
+        "fundamental_data": "sec_edgar",       # US SEC EDGAR companyfacts (US tickers)
+        "news_data": "google_news",            # Google News RSS
+        "macro_data": "fred",                  # Optional; needs FRED_API_KEY (not used by default News Analyst)
+        "prediction_markets": "polymarket",    # Optional enrichment (not used by default News Analyst)
     },
-    # Tool-level configuration (takes precedence over category-level)
-    "tool_vendors": {
-        # Example: "get_stock_data": "alpha_vantage",  # Override category default
-    },
+    # Tool-level overrides (empty = use category vendor above)
+    "tool_vendors": {},
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection

@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.extensions.decision.credibility.models import stable_id
 
 
 def create_aggressive_debator(llm):
@@ -39,6 +40,14 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
         response = llm.invoke(prompt)
 
         argument = f"Aggressive Analyst: {response.content}"
+        constraint = {
+            "constraint_id": stable_id(
+                "constraint",
+                {"run_id": state.get("run_id"), "source": "aggressive", "text": argument},
+            ),
+            "source": "aggressive",
+            "text": argument,
+        }
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
@@ -52,6 +61,7 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
                 "current_neutral_response", ""
             ),
             "count": risk_debate_state["count"] + 1,
+            "constraints": risk_debate_state.get("constraints", []) + [constraint],
         }
 
         return {"risk_debate_state": new_risk_debate_state}

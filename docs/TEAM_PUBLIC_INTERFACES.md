@@ -395,7 +395,7 @@ tradingagents/extensions/
 ├── protocols.py          # 公共，只通过单独的接口 PR 修改
 ├── paper_trading/        # A 独立实现
 ├── memory/               # B 独立实现
-└── decision/             # C 独立实现
+└── decision/             # C：分析师工具与特征库（原 HybridDecisionProvider 闸门已移除）
 ```
 
 推荐直接从公共模块导入：
@@ -421,6 +421,7 @@ from tradingagents.extensions.protocols import (
 - A 在 `paper_trading/` 中提供满足 `MarketDataProvider`、`Broker` 和
   `BacktestRunner` 的对象；
 - B 在 `memory/` 中提供满足 `MemoryProvider` 的对象；
-- C 在 `decision/` 中提供满足 `DecisionProvider` 的对象；
+- C 在 `decision/tools/` 中维护 Market/Sentiment 等 **Analyst Tools**；
+  `DecisionProvider` 协议仍保留供日后薄 Policy / Broker 接入，**当前默认图不再挂接 Hybrid 闸门**；
 - WebUI 和集成代码只导入公共契约与协议，不导入 B、C 的内部类；
 - 公共层的契约测试位于 `tests/test_extension_contracts.py`。

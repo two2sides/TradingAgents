@@ -9,6 +9,9 @@ run produces the same on-disk report tree a CLI run does.
 from datetime import datetime
 from pathlib import Path
 
+from tradingagents.report_appendix import write_report_appendix
+from tradingagents.extensions.decision.credibility.audit_writer import write_audit_bundle
+
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
@@ -56,6 +59,18 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             research_dir.mkdir(exist_ok=True)
             (research_dir / "manager.md").write_text(debate["judge_decision"], encoding="utf-8")
             research_parts.append(("Research Manager", debate["judge_decision"]))
+        used_tools = debate.get("used_tools") or []
+        research_dir.mkdir(exist_ok=True)
+        usage_md = (
+            "# Bull/Bear Debate Tool Usage\n\n"
+            "Each listed tool executed at most once during this run.\n\n"
+            + (
+                "\n".join(f"- `{name}`" for name in used_tools)
+                if used_tools
+                else "- No debate tool was executed."
+            )
+        )
+        (research_dir / "tool_usage.md").write_text(usage_md, encoding="utf-8")
         if research_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
@@ -95,7 +110,26 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             (portfolio_dir / "decision.md").write_text(risk["judge_decision"], encoding="utf-8")
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
+    appendix_md, _ = write_report_appendix(final_state, ticker, save_path)
+    if appendix_md:
+        sections.append(appendix_md)
+
+    credibility_md, audit_profile = write_audit_bundle(final_state, ticker, save_path)
+    final_state["audit_profile"] = audit_profile
+    if credibility_md:
+        sections.append(credibility_md)
+
     # Write consolidated report
-    header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    audit_line = (
+        f"Audit: **{audit_profile.get('status')}** "
+        f"(scope: {audit_profile.get('audit_scope')})\n\n"
+        if audit_profile
+        else ""
+    )
+    header = (
+        f"# Trading Analysis Report: {ticker}\n\n"
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"{audit_line}"
+    )
     (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
     return save_path / "complete_report.md"

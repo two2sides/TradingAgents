@@ -31,6 +31,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
     "yfinance>=1.4.1",
+    "matplotlib>=3.8.0",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +61,7 @@ addopts = "-ra --strict-markers"
 markers = [
     "unit: fast isolated unit tests",
     "integration: tests requiring external services",
+    "network: tests that perform live network requests",
     "smoke: quick sanity-check tests",
 ]
 filterwarnings = [

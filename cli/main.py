@@ -31,7 +31,9 @@ from cli.utils import (
     confirm_ollama_endpoint,
     detect_asset_type,
     ensure_api_key,
+    filter_analysts_for_asset_type,
     get_ticker,
+    normalize_ticker_symbol,
     prompt_openai_compatible_url,
     resolve_backend_url,
     select_analysts,
@@ -197,9 +199,8 @@ class MessageBuffer:
                 "trader_investment_plan": "Trading Team Plan",
                 "final_trade_decision": "Portfolio Management Decision",
             }
-            self.current_report = (
-                f"### {section_titles[latest_section]}\n{latest_content}"
-            )
+            title = section_titles.get(latest_section, latest_section)
+            self.current_report = f"### {title}\n{latest_content}"
 
         # Update the final complete report
         self._update_final_report()
@@ -532,15 +533,19 @@ def get_user_selections():
         console.print(create_question_box(box_title, box_body))
         return prompt_fn()
 
-    # Step 1: Ticker symbol
-    console.print(
-        create_question_box(
-            "Step 1: Ticker Symbol",
-            "Enter the ticker, with exchange suffix when needed (e.g. SPY, 0700.HK, BTC-USD)",
-            "SPY",
+    # Step 1: Ticker symbol (skipped when TRADINGAGENTS_TICKER is set)
+    if os.environ.get("TRADINGAGENTS_TICKER"):
+        selected_ticker = normalize_ticker_symbol(os.environ["TRADINGAGENTS_TICKER"])
+        console.print(f"[green]✓ Ticker from environment:[/green] {selected_ticker}")
+    else:
+        console.print(
+            create_question_box(
+                "Step 1: Ticker Symbol",
+                "Enter the ticker, with exchange suffix when needed (e.g. SPY, 0700.HK, BTC-USD)",
+                "SPY",
+            )
         )
-    )
-    selected_ticker = get_ticker()
+        selected_ticker = get_ticker()
     asset_type = detect_asset_type(selected_ticker)
     # Only announce when it's not the default stock path, to avoid printing
     # "stock" on every run.
@@ -549,16 +554,20 @@ def get_user_selections():
             f"[green]Detected asset type:[/green] {asset_type.value}"
         )
 
-    # Step 2: Analysis date
+    # Step 2: Analysis date (skipped when TRADINGAGENTS_ANALYSIS_DATE is set)
     default_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    console.print(
-        create_question_box(
-            "Step 2: Analysis Date",
-            "Enter the analysis date (YYYY-MM-DD)",
-            default_date,
+    if os.environ.get("TRADINGAGENTS_ANALYSIS_DATE"):
+        analysis_date = os.environ["TRADINGAGENTS_ANALYSIS_DATE"].strip()
+        console.print(f"[green]✓ Analysis date from environment:[/green] {analysis_date}")
+    else:
+        console.print(
+            create_question_box(
+                "Step 2: Analysis Date",
+                "Enter the analysis date (YYYY-MM-DD)",
+                default_date,
+            )
         )
-    )
-    analysis_date = get_analysis_date()
+        analysis_date = get_analysis_date()
 
     # Step 3: Output language (skipped when set via TRADINGAGENTS_OUTPUT_LANGUAGE)
     if os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
@@ -575,16 +584,40 @@ def get_user_selections():
         )
         output_language = ask_output_language()
 
-    # Step 4: Select analysts
-    console.print(
-        create_question_box(
-            "Step 4: Analysts Team", "Select your LLM analyst agents for the analysis"
+    # Step 4: Select analysts (skipped when TRADINGAGENTS_ANALYSTS is set,
+    # e.g. "market,social,news,fundamentals")
+    env_analysts = os.environ.get("TRADINGAGENTS_ANALYSTS", "").strip()
+    if env_analysts:
+        from cli.models import AnalystType
+
+        selected_analysts = []
+        for name in env_analysts.split(","):
+            key = name.strip().lower()
+            if not key:
+                continue
+            try:
+                selected_analysts.append(AnalystType(key))
+            except ValueError:
+                console.print(f"[red]Unknown analyst in TRADINGAGENTS_ANALYSTS: {key}[/red]")
+                exit(1)
+        selected_analysts = filter_analysts_for_asset_type(selected_analysts, asset_type)
+        if not selected_analysts:
+            console.print("[red]No valid analysts after filtering. Exiting...[/red]")
+            exit(1)
+        console.print(
+            f"[green]✓ Analysts from environment:[/green] "
+            f"{', '.join(a.value for a in selected_analysts)}"
         )
-    )
-    selected_analysts = select_analysts(asset_type)
-    console.print(
-        f"[green]Selected analysts:[/green] {', '.join(analyst.value for analyst in selected_analysts)}"
-    )
+    else:
+        console.print(
+            create_question_box(
+                "Step 4: Analysts Team", "Select your LLM analyst agents for the analysis"
+            )
+        )
+        selected_analysts = select_analysts(asset_type)
+        console.print(
+            f"[green]Selected analysts:[/green] {', '.join(analyst.value for analyst in selected_analysts)}"
+        )
 
     # Step 5: Research depth (skipped when both round counts are set via env).
     # Research depth maps to the debate + risk round counts; when both are
@@ -752,7 +785,7 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
     return write_report_tree(final_state, ticker, save_path)
 
 
-def display_complete_report(final_state):
+def display_complete_report(final_state, report_path: Path | None = None):
     """Display the complete analysis report sequentially (avoids truncation)."""
     console.print()
     console.print(Rule("Complete Analysis Report", style="bold green"))
@@ -811,6 +844,15 @@ def display_complete_report(final_state):
         if risk.get("judge_decision"):
             console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
             console.print(Panel(Markdown(risk["judge_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
+
+    if report_path is not None:
+        chart_path = report_path / "appendix" / "price_volume.png"
+        appendix_path = report_path / "appendix" / "statistics.md"
+        if appendix_path.exists():
+            detail = f"统计附录：{appendix_path.resolve()}"
+            if chart_path.exists():
+                detail += f"\n价量图：{chart_path.resolve()}"
+            console.print(Panel(detail, title="VI. 确定性统计与价量图", border_style="cyan"))
 
 
 def update_research_team_status(status):
@@ -1244,27 +1286,47 @@ def run_analysis(checkpoint: bool | None = None):
     console.print("\n[bold cyan]Analysis Complete![/bold cyan]\n")
     console.print(f"[dim]{analyst_wall_time_tracker.format_summary()}[/dim]")
 
-    # Prompt to save report
-    save_choice = typer.prompt("Save report?", default="Y").strip().upper()
+    # Prompt to save report (non-interactive: TRADINGAGENTS_SAVE_REPORT=Y|N)
+    save_env = os.environ.get("TRADINGAGENTS_SAVE_REPORT", "").strip().upper()
+    if save_env in ("Y", "YES", "1", "TRUE", "N", "NO", "0", "FALSE"):
+        save_choice = "Y" if save_env in ("Y", "YES", "1", "TRUE") else "N"
+        console.print(f"[green]✓ Save report from environment:[/green] {save_choice}")
+    else:
+        save_choice = typer.prompt("Save report?", default="Y").strip().upper()
+    saved_report_path = None
     if save_choice in ("Y", "YES", ""):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         default_path = Path.cwd() / "reports" / f"{selections['ticker']}_{timestamp}"
-        save_path_str = typer.prompt(
-            "Save path (press Enter for default)",
-            default=str(default_path)
-        ).strip()
+        path_env = os.environ.get("TRADINGAGENTS_REPORT_PATH", "").strip()
+        if path_env:
+            save_path_str = path_env
+            console.print(f"[green]✓ Report path from environment:[/green] {save_path_str}")
+        else:
+            save_path_str = typer.prompt(
+                "Save path (press Enter for default)",
+                default=str(default_path)
+            ).strip()
         save_path = Path(save_path_str)
         try:
             report_file = save_report_to_disk(final_state, selections["ticker"], save_path)
+            saved_report_path = save_path
             console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
+            chart_file = save_path / "appendix" / "price_volume.png"
+            if chart_file.exists():
+                console.print(f"  [dim]Embedded price/volume chart:[/dim] {chart_file.resolve()}")
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
 
     # Prompt to display full report
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
+    display_env = os.environ.get("TRADINGAGENTS_DISPLAY_REPORT", "").strip().upper()
+    if display_env in ("Y", "YES", "1", "TRUE", "N", "NO", "0", "FALSE"):
+        display_choice = "Y" if display_env in ("Y", "YES", "1", "TRUE") else "N"
+        console.print(f"[green]✓ Display report from environment:[/green] {display_choice}")
+    else:
+        display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
     if display_choice in ("Y", "YES", ""):
-        display_complete_report(final_state)
+        display_complete_report(final_state, saved_report_path)
 
 
 @app.command()

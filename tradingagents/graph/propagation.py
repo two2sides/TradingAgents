@@ -1,6 +1,7 @@
 # TradingAgents/graph/propagation.py
 
 from typing import Any
+from uuid import uuid4
 
 from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
@@ -33,6 +34,12 @@ class Propagator:
         """
         return {
             "messages": [("human", company_name)],
+            "run_id": f"run_{uuid4().hex}",
+            "audit_events": [],
+            "structured_invocations": [],
+            "decision_snapshots": [],
+            "claims": [],
+            "audit_scope_reasons": [],
             "company_of_interest": company_name,
             "asset_type": asset_type,
             "instrument_context": instrument_context,
@@ -46,6 +53,13 @@ class Propagator:
                     "current_response": "",
                     "judge_decision": "",
                     "count": 0,
+                    "used_tools": [],
+                    "tool_events": [],
+                    "debate_turns": [],
+                    "no_novelty_cycles": 0,
+                    "accepted_claim_ids": [],
+                    "rejected_claim_ids": [],
+                    "unresolved_claim_ids": [],
                 }
             ),
             "risk_debate_state": RiskDebateState(
@@ -60,6 +74,7 @@ class Propagator:
                     "current_neutral_response": "",
                     "judge_decision": "",
                     "count": 0,
+                    "constraints": [],
                 }
             ),
             "market_report": "",

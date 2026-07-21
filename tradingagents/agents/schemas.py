@@ -65,6 +65,33 @@ class TraderAction(str, Enum):
     SELL = "Sell"
 
 
+class ClaimSidecar(BaseModel):
+    """A concise, machine-readable claim emitted beside an agent's prose."""
+
+    text: str
+    claim_type: Literal["NUMERIC", "DATE", "FACT", "CAUSAL", "FORECAST", "OPINION"]
+    importance: Literal["CRITICAL", "MAJOR", "MINOR"] = "MAJOR"
+    subject: str | None = None
+    predicate: str | None = None
+    value: float | str | None = None
+    unit: str | None = None
+    period_start: str | None = None
+    period_end: str | None = None
+    as_of: str | None = None
+    evidence_refs: list[str] = Field(
+        default_factory=list,
+        description="Artifact IDs explicitly shown in tool evidence, when available.",
+    )
+    uncertainty: str | None = None
+
+
+class AnalystClaimEnvelope(BaseModel):
+    """Claim sidecar extracted by the same analyst after its final tool round."""
+
+    key_claims: list[ClaimSidecar] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Research Manager
 # ---------------------------------------------------------------------------
@@ -100,17 +127,31 @@ class ResearchPlan(BaseModel):
             "including position sizing guidance consistent with the rating."
         ),
     )
+    key_claims: list[ClaimSidecar] = Field(default_factory=list)
+    accepted_claim_ids: list[str] = Field(default_factory=list)
+    rejected_claim_ids: list[str] = Field(default_factory=list)
+    unresolved_claim_ids: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
 
 
 def render_research_plan(plan: ResearchPlan) -> str:
     """Render a ResearchPlan to markdown for storage and the trader's prompt context."""
-    return "\n".join([
+    parts = [
         f"**Recommendation**: {plan.recommendation.value}",
         "",
         f"**Rationale**: {plan.rationale}",
         "",
         f"**Strategic Actions**: {plan.strategic_actions}",
-    ])
+    ]
+    if plan.accepted_claim_ids:
+        parts.extend(["", f"**Accepted Claims**: {', '.join(plan.accepted_claim_ids)}"])
+    if plan.rejected_claim_ids:
+        parts.extend(["", f"**Rejected Claims**: {', '.join(plan.rejected_claim_ids)}"])
+    if plan.unresolved_claim_ids:
+        parts.extend(["", f"**Unresolved Claims**: {', '.join(plan.unresolved_claim_ids)}"])
+    if plan.uncertainties:
+        parts.extend(["", "**Uncertainties**:", *[f"- {item}" for item in plan.uncertainties]])
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +189,10 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    key_claims: list[ClaimSidecar] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    alignment: Literal["ADOPTED", "MODIFIED", "NOT_COMPARABLE"] = "NOT_COMPARABLE"
+    change_reason: str | None = None
 
     @field_validator("entry_price", "stop_loss", mode="before")
     @classmethod
@@ -173,6 +218,10 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.change_reason:
+        parts.extend(["", f"**Change Reason**: {proposal.change_reason}"])
+    if proposal.uncertainties:
+        parts.extend(["", "**Uncertainties**:", *[f"- {item}" for item in proposal.uncertainties]])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
@@ -221,6 +270,10 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    key_claims: list[ClaimSidecar] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    alignment: Literal["ADOPTED", "MODIFIED", "NOT_COMPARABLE"] = "NOT_COMPARABLE"
+    change_reason: str | None = None
 
     @field_validator("price_target", mode="before")
     @classmethod
@@ -247,6 +300,10 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    if decision.change_reason:
+        parts.extend(["", f"**Change Reason**: {decision.change_reason}"])
+    if decision.uncertainties:
+        parts.extend(["", "**Uncertainties**:", *[f"- {item}" for item in decision.uncertainties]])
     return "\n".join(parts)
 
 
@@ -303,7 +360,9 @@ class SentimentReport(BaseModel):
     )
     confidence: Literal["low", "medium", "high"] = Field(
         description=(
-            "Confidence in the assessment based on data quality and sample size. "
+            "Uncalibrated subjective confidence in the assessment, based only on "
+            "data quality and sample size; it is not a probability of correctness "
+            "and must not be used as the system AuditProfile. "
             "Use 'low' when one or more sources returned a placeholder or fewer "
             "than 5 data points; 'medium' when data is present but sparse; "
             "'high' when all three sources returned substantive data."
@@ -323,6 +382,8 @@ class SentimentReport(BaseModel):
             "with concrete evidence so every point adds new signal for the trader."
         ),
     )
+    key_claims: list[ClaimSidecar] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
 
 
 def render_sentiment_report(report: SentimentReport) -> str:
@@ -335,7 +396,8 @@ def render_sentiment_report(report: SentimentReport) -> str:
     return "\n".join([
         f"**Overall Sentiment:** **{report.overall_band.value}** "
         f"(Score: {report.overall_score:.1f}/10)",
-        f"**Confidence:** {report.confidence.capitalize()}",
+        f"**Confidence:** {report.confidence.capitalize()} "
+        "*(subjective and uncalibrated; not AuditProfile confidence)*",
         "",
         report.narrative,
     ])

@@ -13,8 +13,11 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured_with_metadata,
 )
+from tradingagents.agents.utils.rating import parse_rating_strict
+from tradingagents.extensions.decision.credibility.models import DecisionSnapshot, stable_id
+from tradingagents.extensions.decision.credibility.claims import claims_from_invocation
 
 
 def create_trader(llm):
@@ -22,6 +25,7 @@ def create_trader(llm):
 
     def trader_node(state, name):
         company_name = state["company_of_interest"]
+        run_id = state.get("run_id", "legacy-run")
         instrument_context = get_instrument_context_from_state(state)
         investment_plan = state["investment_plan"]
 
@@ -48,18 +52,50 @@ def create_trader(llm):
             },
         ]
 
-        trader_plan = invoke_structured_or_freetext(
+        invocation = invoke_structured_with_metadata(
             structured_llm,
             llm,
             messages,
             render_trader_proposal,
             "Trader",
         )
+        trader_plan = invocation.text
+        parsed = parse_rating_strict(trader_plan, expected_label="action")
+        snapshot = DecisionSnapshot(
+            snapshot_id=stable_id("snapshot", {"run_id": run_id, "stage": "trader"}),
+            run_id=run_id,
+            stage="trader",
+            decision_type="TraderAction",
+            value=parsed.parsed,
+            parsed=parsed.parsed is not None,
+            source=parsed.source,
+            error=parsed.error,
+            alignment="NOT_COMPARABLE",
+            upstream_decision_ref=next(
+                (
+                    item.get("snapshot_id")
+                    for item in reversed(state.get("decision_snapshots", []))
+                    if item.get("stage") == "research_manager"
+                ),
+                None,
+            ),
+        )
+        claims = claims_from_invocation(
+            run_id=run_id,
+            agent="Trader",
+            stage="trader",
+            invocation=invocation,
+            audit_events=state.get("audit_events", []),
+            trade_date=state.get("trade_date", ""),
+        )
 
         return {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
             "sender": name,
+            "structured_invocations": [invocation.model_dump(mode="json")],
+            "decision_snapshots": [snapshot.model_dump(mode="json")],
+            "claims": claims,
         }
 
     return functools.partial(trader_node, name="Trader")

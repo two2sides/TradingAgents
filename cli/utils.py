@@ -14,10 +14,10 @@ console = Console()
 TICKER_INPUT_EXAMPLES = "SPY, 0700.HK, BTC-USD"
 
 ANALYST_ORDER = [
-    ("Market Analyst", AnalystType.MARKET),
-    ("Sentiment Analyst", AnalystType.SOCIAL),
-    ("News Analyst", AnalystType.NEWS),
-    ("Fundamentals Analyst", AnalystType.FUNDAMENTALS),
+    ("Market Analyst · 行情/指标 (yahoo_chart·无需Key)", AnalystType.MARKET),
+    ("Sentiment Analyst · 新闻情绪 (Google News·无需Key)", AnalystType.SOCIAL),
+    ("News Analyst · 新闻 (Google News·无需Key)", AnalystType.NEWS),
+    ("Fundamentals Analyst · 基本面 (SEC美股·无需Key)", AnalystType.FUNDAMENTALS),
 ]
 
 CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
@@ -137,6 +137,11 @@ def select_analysts(asset_type: AssetType = AssetType.STOCK) -> list[AnalystType
     available_analysts = filter_analysts_for_asset_type(
         [value for _, value in ANALYST_ORDER],
         asset_type,
+    )
+    console.print(
+        "[dim]默认数据源均无需额外行情 Key。"
+        "加密资产会隐藏 Fundamentals（SEC 仅美股）。"
+        "LLM 仍需配置对应供应商的 API Key。[/dim]\n"
     )
     choices = questionary.checkbox(
         "Select Your [Analysts Team]:",

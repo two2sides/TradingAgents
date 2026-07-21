@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated
 
 from langgraph.graph import MessagesState
@@ -16,6 +17,15 @@ class InvestDebateState(TypedDict):
     current_response: Annotated[str, "Latest response"]  # Last response
     judge_decision: Annotated[str, "Final judge decision"]  # Last response
     count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    used_tools: Annotated[
+        list[str], "Debate tools already executed in this run (each at most once)"
+    ]
+    tool_events: Annotated[list[dict], "Evidence events from debate tools"]
+    debate_turns: Annotated[list[dict], "Structured bull/bear turn records"]
+    no_novelty_cycles: Annotated[int, "Consecutive complete cycles without novelty"]
+    accepted_claim_ids: Annotated[list[str], "Claims accepted by Research Manager"]
+    rejected_claim_ids: Annotated[list[str], "Claims rejected by Research Manager"]
+    unresolved_claim_ids: Annotated[list[str], "Claims left unresolved by Research Manager"]
 
 
 # Risk management team state
@@ -42,9 +52,17 @@ class RiskDebateState(TypedDict):
     ]  # Last response
     judge_decision: Annotated[str, "Judge's decision"]
     count: Annotated[int, "Length of the current conversation"]  # Conversation length
+    constraints: Annotated[list[dict], "Risk constraints available to Portfolio Manager"]
 
 
 class AgentState(MessagesState):
+    run_id: Annotated[str, "Unique credibility/audit run identifier"]
+    audit_events: Annotated[list[dict], operator.add]
+    structured_invocations: Annotated[list[dict], operator.add]
+    decision_snapshots: Annotated[list[dict], operator.add]
+    claims: Annotated[list[dict], operator.add]
+    audit_scope_reasons: Annotated[list[str], operator.add]
+
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]

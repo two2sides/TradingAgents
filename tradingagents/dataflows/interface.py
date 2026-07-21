@@ -18,7 +18,23 @@ from .errors import (
     VendorRateLimitError,
 )
 from .fred import get_macro_data as get_fred_macro_data
+from .google_news import get_global_news_google, get_news_google
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
+from .sec_edgar import (
+    get_balance_sheet_sec,
+    get_cashflow_sec,
+    get_fundamentals_sec,
+    get_income_statement_sec,
+)
+from .static_unavailable import (
+    get_balance_sheet_unavailable,
+    get_cashflow_unavailable,
+    get_fundamentals_unavailable,
+    get_income_statement_unavailable,
+    get_insider_transactions_unavailable,
+)
+from .stooq import get_stooq_stock
+from .yahoo_chart import get_yahoo_chart_stock
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -29,6 +45,11 @@ from .y_finance import (
     get_YFin_data_online,
 )
 from .yfinance_news import get_global_news_yfinance, get_news_yfinance
+
+try:
+    from yfinance.exceptions import YFRateLimitError
+except ImportError:  # pragma: no cover
+    YFRateLimitError = None  # type: ignore[misc, assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +99,16 @@ TOOLS_CATEGORIES = {
 }
 
 VENDOR_LIST = [
-    "yfinance",
+    "yahoo_chart",
+    "stooq",
+    "google_news",
+    "sec_edgar",
+    "stockstats",
+    "unavailable",
     "fred",
     "polymarket",
     "alpha_vantage",
+    "yfinance",  # kept registered but not used in default_config
 ]
 
 # Optional enrichment categories. These add macro/event context to the news
@@ -95,41 +122,55 @@ OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
 VENDOR_METHODS = {
     # core_stock_apis
     "get_stock_data": {
+        "yahoo_chart": get_yahoo_chart_stock,
+        "stooq": get_stooq_stock,
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
     },
-    # technical_indicators
+    # technical_indicators (local calc; OHLCV via load_ohlcv / yahoo_chart)
     "get_indicators": {
+        "stockstats": get_stock_stats_indicators_window,
         "alpha_vantage": get_alpha_vantage_indicator,
-        "yfinance": get_stock_stats_indicators_window,
+        "yfinance": get_stock_stats_indicators_window,  # legacy alias
     },
     # fundamental_data
     "get_fundamentals": {
+        "sec_edgar": get_fundamentals_sec,
+        "unavailable": get_fundamentals_unavailable,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "sec_edgar": get_balance_sheet_sec,
+        "unavailable": get_balance_sheet_unavailable,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "sec_edgar": get_cashflow_sec,
+        "unavailable": get_cashflow_unavailable,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "sec_edgar": get_income_statement_sec,
+        "unavailable": get_income_statement_unavailable,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
     },
     # news_data
     "get_news": {
+        "google_news": get_news_google,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
     "get_global_news": {
-        "yfinance": get_global_news_yfinance,
+        "google_news": get_global_news_google,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "yfinance": get_global_news_yfinance,
     },
     "get_insider_transactions": {
+        "unavailable": get_insider_transactions_unavailable,
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
     },
@@ -203,15 +244,26 @@ def route_to_vendor(method: str, *args, **kwargs):
         except VendorRateLimitError:
             logger.warning("Vendor %r rate-limited for %s; trying next vendor.", vendor, method)
             continue
-        except VendorNotConfiguredError as e:
-            logger.warning("Vendor %r not configured for %s; trying next vendor.", vendor, method)
-            if first_error is None:
-                first_error = e  # Surface it if no other vendor can serve the call.
-            continue
-        except NoMarketDataError as e:
-            last_no_data = e  # No data here; another configured vendor may have it
-            continue
         except Exception as e:
+            # Yahoo may raise YFRateLimitError outside yf_retry wrappers; treat
+            # it like VendorRateLimitError so Stooq/Alpha Vantage can run.
+            if YFRateLimitError is not None and isinstance(e, YFRateLimitError):
+                logger.warning(
+                    "Vendor %r Yahoo-rate-limited for %s; trying next vendor.",
+                    vendor,
+                    method,
+                )
+                continue
+            if isinstance(e, VendorNotConfiguredError):
+                logger.warning(
+                    "Vendor %r not configured for %s; trying next vendor.", vendor, method
+                )
+                if first_error is None:
+                    first_error = e
+                continue
+            if isinstance(e, NoMarketDataError):
+                last_no_data = e
+                continue
             # Don't let one vendor's failure crash the call when another can
             # serve it, but never swallow silently: a broken primary must be
             # visible in the logs (#989), not hidden behind a fallback's verdict.

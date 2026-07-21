@@ -7,9 +7,20 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     get_verified_market_snapshot,
 )
+from tradingagents.agents.utils.claim_sidecar import (
+    append_claim_index,
+    bind_claim_sidecar,
+    build_claim_sidecar,
+)
+from tradingagents.extensions.decision.tools.market_bound_tools import (
+    analyze_multi_horizon_ohlcv_for_ticker,
+    detect_price_gap_for_ticker,
+    detect_volume_anomaly_for_ticker,
+)
 
 
 def create_market_analyst(llm):
+    claim_llm = bind_claim_sidecar(llm, "Market Analyst")
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
@@ -19,6 +30,9 @@ def create_market_analyst(llm):
             get_stock_data,
             get_indicators,
             get_verified_market_snapshot,
+            analyze_multi_horizon_ohlcv_for_ticker,
+            detect_volume_anomaly_for_ticker,
+            detect_price_gap_for_ticker,
         ]
 
         system_message = (
@@ -47,6 +61,12 @@ Volume-Based Indicators:
 - vwma: VWMA: A moving average weighted by volume. Usage: Confirm trends by integrating price action with volume data. Tips: Watch for skewed results from volume spikes; use in combination with other volume analyses.
 
 - Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names.
+
+Also call the deterministic multi-horizon OHLCV tools at least once when data is available:
+- analyze_multi_horizon_ohlcv_for_ticker(symbol, trade_date)
+- detect_volume_anomaly_for_ticker(symbol, trade_date)
+- detect_price_gap_for_ticker(symbol, trade_date)
+Use their numeric outputs (returns, SMA ratios, volume z-score, gaps) as hard evidence; do not invent conflicting numbers.
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
@@ -82,14 +102,23 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
 
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "market_report": report,
-        }
+        update = {"messages": [result]}
+        if len(result.tool_calls) == 0 and result.content:
+            invocation, claims = build_claim_sidecar(
+                structured_llm=claim_llm,
+                plain_llm=llm,
+                agent_name="Market Analyst",
+                stage="market",
+                draft=str(result.content),
+                state=state,
+            )
+            update.update(
+                {
+                    "market_report": append_claim_index(str(result.content), claims),
+                    "structured_invocations": [invocation],
+                    "claims": claims,
+                }
+            )
+        return update
 
     return market_analyst_node

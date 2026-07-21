@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
+from tradingagents.extensions.decision.credibility.models import StructuredInvocationResult
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,20 @@ def invoke_structured_or_freetext(
     shape). The same value is forwarded to the free-text path so the
     fallback sees the same input the structured call did.
     """
+    return invoke_structured_with_metadata(
+        structured_llm, plain_llm, prompt, render, agent_name
+    ).text
+
+
+def invoke_structured_with_metadata(
+    structured_llm: Any | None,
+    plain_llm: Any,
+    prompt: Any,
+    render: Callable[[T], str],
+    agent_name: str,
+) -> StructuredInvocationResult:
+    """Invoke an agent and preserve whether structured output succeeded."""
+    parse_error: Exception | None = None
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
@@ -68,12 +83,28 @@ def invoke_structured_or_freetext(
                 # the tool, leaving the parser with nothing to return. Treat it
                 # as a structured miss and fall back, with a clear reason.
                 raise ValueError("structured output returned no parsed result")
-            return render(result)
+            return StructuredInvocationResult(
+                text=render(result),
+                mode="STRUCTURED",
+                agent_name=agent_name,
+                schema_name=type(result).__name__,
+                parsed=result.model_dump(mode="json"),
+            )
         except Exception as exc:
+            parse_error = exc
             logger.warning(
                 "%s: structured-output invocation failed (%s); retrying once as free text",
                 agent_name, exc,
             )
 
     response = plain_llm.invoke(prompt)
-    return response.content
+    error_code = type(parse_error).__name__ if parse_error else "STRUCTURED_UNAVAILABLE"
+    return StructuredInvocationResult(
+        text=str(response.content or ""),
+        mode="FALLBACK_UNSTRUCTURED",
+        agent_name=agent_name,
+        schema_name="unknown",
+        attempts=2 if parse_error else 1,
+        parse_error_code=error_code,
+        parse_error=str(parse_error) if parse_error else None,
+    )

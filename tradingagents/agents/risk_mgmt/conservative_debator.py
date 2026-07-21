@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.extensions.decision.credibility.models import stable_id
 
 
 def create_conservative_debator(llm):
@@ -39,6 +40,14 @@ Engage by questioning their optimism and emphasizing the potential downsides the
         response = llm.invoke(prompt)
 
         argument = f"Conservative Analyst: {response.content}"
+        constraint = {
+            "constraint_id": stable_id(
+                "constraint",
+                {"run_id": state.get("run_id"), "source": "conservative", "text": argument},
+            ),
+            "source": "conservative",
+            "text": argument,
+        }
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
@@ -54,6 +63,7 @@ Engage by questioning their optimism and emphasizing the potential downsides the
                 "current_neutral_response", ""
             ),
             "count": risk_debate_state["count"] + 1,
+            "constraints": risk_debate_state.get("constraints", []) + [constraint],
         }
 
         return {"risk_debate_state": new_risk_debate_state}

@@ -7,9 +7,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-import yfinance as yf
-from langgraph.prebuilt import ToolNode
-
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
@@ -19,10 +16,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_global_news,
     get_income_statement,
     get_indicators,
-    get_insider_transactions,
-    get_macro_indicators,
     get_news,
-    get_prediction_markets,
     get_stock_data,
     get_verified_market_snapshot,
     resolve_instrument_identity,
@@ -31,6 +25,12 @@ from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.extensions.decision.tools.market_bound_tools import (
+    analyze_multi_horizon_ohlcv_for_ticker,
+    detect_price_gap_for_ticker,
+    detect_volume_anomaly_for_ticker,
+)
+from tradingagents.extensions.decision.credibility import build_audited_tool_node
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
 
@@ -185,10 +185,10 @@ class TradingAgentsGraph:
 
         return kwargs
 
-    def _create_tool_nodes(self) -> dict[str, ToolNode]:
+    def _create_tool_nodes(self) -> dict[str, Any]:
         """Create tool nodes for different data sources using abstract methods."""
         return {
-            "market": ToolNode(
+            "market": build_audited_tool_node(
                 [
                     # Core stock data tools
                     get_stock_data,
@@ -198,32 +198,36 @@ class TradingAgentsGraph:
                     # LLM and required by its prompt; must be executable here or
                     # the call fails and the model reports it "unavailable").
                     get_verified_market_snapshot,
-                ]
+                    # Deterministic multi-horizon OHLCV tools (C-added analyst tools)
+                    analyze_multi_horizon_ohlcv_for_ticker,
+                    detect_volume_anomaly_for_ticker,
+                    detect_price_gap_for_ticker,
+                ],
+                "tools_market",
             ),
-            "social": ToolNode(
+            "social": build_audited_tool_node(
                 [
                     # News tools for social media analysis
                     get_news,
-                ]
+                ],
+                "tools_social",
             ),
-            "news": ToolNode(
+            "news": build_audited_tool_node(
                 [
-                    # News and insider information
                     get_news,
                     get_global_news,
-                    get_insider_transactions,
-                    get_macro_indicators,
-                    get_prediction_markets,
-                ]
+                ],
+                "tools_news",
             ),
-            "fundamentals": ToolNode(
+            "fundamentals": build_audited_tool_node(
                 [
                     # Fundamental analysis tools
                     get_fundamentals,
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
-                ]
+                ],
+                "tools_fundamentals",
             ),
         }
 
@@ -262,15 +266,19 @@ class TradingAgentsGraph:
         from tradingagents.dataflows.symbol_utils import normalize_symbol
 
         try:
-            start = datetime.strptime(trade_date, "%Y-%m-%d")
-            end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
-            end_str = end.strftime("%Y-%m-%d")
+            import pandas as pd
 
-            # Normalize so the realized-return lookup hits the same instrument
-            # the analysis priced (e.g. XAUUSD -> GC=F) (#984). The benchmark is
-            # already a canonical Yahoo symbol from ``_resolve_benchmark``.
-            stock = yf.Ticker(normalize_symbol(ticker)).history(start=trade_date, end=end_str)
-            bench = yf.Ticker(benchmark).history(start=trade_date, end=end_str)
+            from tradingagents.dataflows.stockstats_utils import load_ohlcv
+            from tradingagents.dataflows.symbol_utils import normalize_symbol
+
+            end = datetime.strptime(trade_date, "%Y-%m-%d") + timedelta(days=holding_days + 14)
+            end_str = end.strftime("%Y-%m-%d")
+            # load_ohlcv truncates to as_of; use end_str so the holding window is present.
+            stock_df = load_ohlcv(normalize_symbol(ticker), end_str)
+            bench_df = load_ohlcv(benchmark, end_str)
+            start_ts = pd.Timestamp(trade_date)
+            stock = stock_df[stock_df["Date"] >= start_ts].reset_index(drop=True)
+            bench = bench_df[bench_df["Date"] >= start_ts].reset_index(drop=True)
 
             if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
@@ -336,9 +344,8 @@ class TradingAgentsGraph:
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
 
-        Deterministic yfinance lookup (cached, fail-open) injected into a
-        context string so every agent anchors to the real company instead of
-        hallucinating one from the price chart (#814). Both the propagate()
+        Deterministic identity lookup (cached, fail-open; no yfinance call) injected into a
+        context string so every agent anchors to the ticker. Both the propagate()
         path and the CLI call this so the resolved identity reaches the whole
         graph regardless of entry point.
         """
@@ -479,7 +486,8 @@ class TradingAgentsGraph:
                 self._run_signature(asset_type),
             )
 
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        signal = self.process_signal(final_state["final_trade_decision"])
+        return final_state, signal
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
@@ -500,6 +508,9 @@ class TradingAgentsGraph:
                 "judge_decision": final_state["investment_debate_state"][
                     "judge_decision"
                 ],
+                "used_tools": final_state["investment_debate_state"].get(
+                    "used_tools", []
+                ),
             },
             "trader_investment_decision": final_state["trader_investment_plan"],
             "risk_debate_state": {

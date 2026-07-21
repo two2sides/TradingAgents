@@ -8,9 +8,16 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.claim_sidecar import (
+    append_claim_index,
+    bind_claim_sidecar,
+    build_claim_sidecar,
+)
 
 
 def create_fundamentals_analyst(llm):
+    claim_llm = bind_claim_sidecar(llm, "Fundamentals Analyst")
+
     def fundamentals_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
@@ -56,14 +63,23 @@ def create_fundamentals_analyst(llm):
 
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
-
-        return {
-            "messages": [result],
-            "fundamentals_report": report,
-        }
+        update = {"messages": [result]}
+        if len(result.tool_calls) == 0 and result.content:
+            invocation, claims = build_claim_sidecar(
+                structured_llm=claim_llm,
+                plain_llm=llm,
+                agent_name="Fundamentals Analyst",
+                stage="fundamentals",
+                draft=str(result.content),
+                state=state,
+            )
+            update.update(
+                {
+                    "fundamentals_report": append_claim_index(str(result.content), claims),
+                    "structured_invocations": [invocation],
+                    "claims": claims,
+                }
+            )
+        return update
 
     return fundamentals_analyst_node
