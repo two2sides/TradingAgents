@@ -1,0 +1,216 @@
+"""ChromaDB-backed storage for trading memory.
+
+Each memory is stored as multiple chunks (thesis, market_context,
+portfolio_context, reflection).  Chunks share a ``memory_id`` so they can
+be de-duplicated during retrieval.  ChromaDB provides ANN vector search
+with metadata filtering out of the box.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tradingagents.extensions.contracts import (
+        DecisionOutcome,
+        DecisionRecord,
+        MemoryItem,
+    )
+
+logger = logging.getLogger(__name__)
+
+# ChromaDB metadata keys used in where-clause filters
+_KEY_MEMORY_ID = "memory_id"
+_KEY_CHUNK_TYPE = "chunk_type"
+_KEY_SYMBOL = "symbol"
+_KEY_DECISION_AT = "decision_at"
+_KEY_AVAILABLE_AT = "available_at"
+_KEY_TAGS = "agent_tags"
+_KEY_CONFIDENCE = "confidence"
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class MemoryStore:
+    """ChromaDB-backed persistent store for trading memory chunks."""
+
+    def __init__(self, path: str | None = None, config: dict | None = None):
+        cfg = config or {}
+        db_path = path or cfg.get(
+            "memory_db_path",
+            cfg.get("data_cache_dir", ".tradingagents") + "/memory_db",
+        )
+
+        try:
+            import chromadb
+        except ImportError:
+            raise ImportError(
+                "chromadb is required for the enhanced memory store. "
+                "Install with: pip install chromadb"
+            )
+
+        self._client = chromadb.PersistentClient(
+            path=db_path,
+            settings=chromadb.Settings(anonymized_telemetry=False),
+        )
+        self._collection = self._client.get_or_create_collection(
+            name="trading_memories",
+            metadata={"hnsw:space": "cosine"},
+        )
+        logger.info(
+            "MemoryStore initialised at %s — %d chunks in collection.",
+            db_path,
+            self._collection.count(),
+        )
+
+    @property
+    def collection(self):
+        """Direct ChromaDB collection access for retrieval layer."""
+        return self._collection
+
+    # ── Write path ──────────────────────────────────────────────────────
+
+    def insert(
+        self,
+        record: DecisionRecord,
+        chunks: list[dict],
+        embeddings: list[list[float]],
+        agent_tags: list[str],
+    ) -> str:
+        """Persist a new decision as multiple chunk rows.
+
+        Returns the shared ``memory_id``.
+        """
+        memory_id = f"mem-{uuid.uuid4().hex[:12]}"
+        decision_at = record.intent.as_of.isoformat()
+        tags_str = "|".join(agent_tags) if agent_tags else "general"
+
+        ids: list[str] = []
+        docs: list[str] = []
+        embs: list[list[float]] = []
+        metas: list[dict] = []
+
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"{memory_id}-{chunk['type']}"
+            ids.append(chunk_id)
+            docs.append(chunk["content"])
+            embs.append(embeddings[i])
+            metas.append({
+                _KEY_MEMORY_ID: memory_id,
+                _KEY_CHUNK_TYPE: chunk["type"],
+                _KEY_SYMBOL: record.intent.symbol,
+                _KEY_DECISION_AT: decision_at,
+                _KEY_AVAILABLE_AT: decision_at,  # decision-time data available immediately
+                _KEY_TAGS: tags_str,
+                _KEY_CONFIDENCE: record.intent.confidence,
+                "outcome_raw": None,
+                "outcome_alpha": None,
+                "outcome_quality": None,
+            })
+
+        self._collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+        logger.debug("Inserted memory %s with %d chunks.", memory_id, len(chunks))
+        return memory_id
+
+    def update_outcome(self, memory_id: str, outcome: DecisionOutcome) -> None:
+        """Update all chunks of *memory_id* with outcome metadata."""
+        existing = self._collection.get(where={_KEY_MEMORY_ID: memory_id})
+        if not existing or not existing["ids"]:
+            logger.warning("update_outcome: no chunks found for %s", memory_id)
+            return
+
+        quality = _outcome_quality(outcome)
+        new_metas = []
+        for meta in existing["metadatas"]:
+            meta = dict(meta)  # copy — ChromaDB returns immutable dicts
+            meta["outcome_raw"] = outcome.holding_period_return
+            meta["outcome_alpha"] = (
+                outcome.holding_period_return  # alpha is computed externally
+            )
+            meta["outcome_quality"] = quality
+            new_metas.append(meta)
+
+        self._collection.update(ids=existing["ids"], metadatas=new_metas)
+        logger.debug("Updated outcome for %s (quality=%.2f).", memory_id, quality)
+
+    def append_reflection_chunk(
+        self,
+        memory_id: str,
+        content: str,
+        embedding: list[float],
+        symbol: str,
+        available_at: str,
+        agent_tags: str = "reflection",
+    ) -> None:
+        """Add a reflection chunk to an existing memory."""
+        chunk_id = f"{memory_id}-reflection"
+        self._collection.add(
+            ids=[chunk_id],
+            embeddings=[embedding],
+            documents=[content],
+            metadatas=[{
+                _KEY_MEMORY_ID: memory_id,
+                _KEY_CHUNK_TYPE: "reflection",
+                _KEY_SYMBOL: symbol,
+                _KEY_DECISION_AT: _utc_now(),
+                _KEY_AVAILABLE_AT: available_at,
+                _KEY_TAGS: agent_tags,
+                _KEY_CONFIDENCE: 0.0,
+                "outcome_raw": None,
+                "outcome_alpha": None,
+                "outcome_quality": None,
+            }],
+        )
+        logger.debug("Appended reflection chunk to %s.", memory_id)
+
+    # ── Read path ───────────────────────────────────────────────────────
+
+    def get_record_context(self, memory_id: str) -> dict[str, Any] | None:
+        """Return all chunks for *memory_id* as a dict for reflection generation."""
+        result = self._collection.get(where={_KEY_MEMORY_ID: memory_id})
+        if not result or not result["ids"]:
+            return None
+
+        chunks_by_type: dict[str, str] = {}
+        symbol = ""
+        for i, ctype in enumerate(result["metadatas"]):
+            chunks_by_type[ctype[_KEY_CHUNK_TYPE]] = result["documents"][i]
+            symbol = ctype[_KEY_SYMBOL]
+
+        return {
+            "memory_id": memory_id,
+            "symbol": symbol,
+            "chunks": chunks_by_type,
+        }
+
+    # ── Helpers ─────────────────────────────────────────────────────────
+
+    def count(self) -> int:
+        return self._collection.count()
+
+
+def _outcome_quality(outcome: DecisionOutcome) -> float | None:
+    """Heuristic that scores outcome quality from holding-period return.
+
+    Returns a value in [0, 1], or None when the return is unavailable.
+    This is used to boost high-quality memories in retrieval ranking.
+    """
+    ret = outcome.holding_period_return
+    if ret is None:
+        return None
+    if ret > 0.10:
+        return 1.0
+    if ret > 0.05:
+        return 0.85
+    if ret > 0.0:
+        return 0.65
+    if ret > -0.05:
+        return 0.40
+    if ret > -0.10:
+        return 0.20
+    return 0.10

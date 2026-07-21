@@ -45,6 +45,12 @@ dev = [
 bedrock = [
     "langchain-aws>=1.5.0",
 ]
+# Enhanced memory (RAG) support — ChromaDB vector store + local embeddings.
+# Install with: pip install "tradingagents[memory]"
+memory = [
+    "chromadb>=0.5",
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

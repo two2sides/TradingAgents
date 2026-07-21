@@ -77,6 +77,17 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
+    # -- Enhanced memory (RAG) settings ----------------------------------
+    # Path to the ChromaDB persistent store used by EnhancedMemoryProvider.
+    "memory_db_path": os.getenv("TRADINGAGENTS_MEMORY_DB_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory_db")),
+    # Embedding backend: "local" (sentence-transformers, offline) or "openai" (API).
+    "memory_embedding": os.getenv("TRADINGAGENTS_MEMORY_EMBEDDING", "local"),
+    # Model name for the chosen embedding backend.
+    "memory_embedding_model": os.getenv("TRADINGAGENTS_MEMORY_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+    # Injection point for EnhancedMemoryProvider.  Set programmatically
+    # (not via env var) to replace TradingMemoryLog with RAG retrieval.
+    # When None (default), TradingMemoryLog handles all memory operations.
+    "memory_provider": None,
     # LLM settings
     "llm_provider": "openai",
     "deep_think_llm": "gpt-5.5",

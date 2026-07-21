@@ -33,6 +33,12 @@ from tradingagents.extensions.decision.tools.market_bound_tools import (
 from tradingagents.extensions.decision.credibility import build_audited_tool_node
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
+from tradingagents.extensions.contracts import (
+    DecisionRecord,
+    MarketSnapshot,
+    PortfolioState,
+    TradeIntent,
+)
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -115,6 +121,11 @@ class TradingAgentsGraph:
         self.quick_thinking_llm = quick_client.get_llm()
 
         self.memory_log = TradingMemoryLog(self.config)
+
+        # Enhanced RAG memory provider (B-team).  When set, replaces
+        # TradingMemoryLog for retrieval, recording, and outcome tracking.
+        # Pass via config["memory_provider"] = EnhancedMemoryProvider(...).
+        self.memory_provider = self.config.get("memory_provider", None)
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -304,13 +315,54 @@ class TradingAgentsGraph:
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
-        Fetches returns for each same-ticker pending entry, generates reflections,
-        then writes all updates in a single atomic batch write to avoid redundant I/O.
-        Skips entries whose price data is not yet available (too recent or delisted).
-
-        Trade-off: only same-ticker entries are resolved per run.  Entries for
-        other tickers accumulate until that ticker is run again.
+        When ``memory_provider`` is active, resolution is handled via
+        ``record_outcome()`` — the provider persists reflections and updates
+        embeddings so future retrievals benefit from the outcome knowledge.
+        Otherwise falls back to the markdown-based TradingMemoryLog.
         """
+        # Enhanced path: the provider manages its own outcome lifecycle.
+        # Pending entries in the markdown log are skipped; the provider
+        # will receive outcomes via record_outcome() after _fetch_returns.
+        if self.memory_provider:
+            pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
+            if not pending:
+                return
+            benchmark = self._resolve_benchmark(ticker)
+            for entry in pending:
+                raw, alpha, days = self._fetch_returns(
+                    ticker, entry["date"], benchmark=benchmark,
+                )
+                if raw is None:
+                    continue
+                from tradingagents.extensions.contracts import (
+                    DecisionOutcome,
+                    MemoryReference,
+                )
+                from datetime import datetime, timezone
+                reflection = self.reflector.reflect_on_final_decision(
+                    final_decision=entry.get("decision", ""),
+                    raw_return=raw,
+                    alpha_return=alpha,
+                    benchmark_name=benchmark,
+                )
+                self.memory_provider.record_outcome(
+                    MemoryReference(memory_id=entry.get("date", "")),
+                    DecisionOutcome(
+                        observed_at=datetime.now(timezone.utc),
+                        holding_period_return=raw,
+                        max_adverse_move=None,
+                        portfolio_impact=None,
+                    ),
+                )
+            # Also resolve in the legacy log so both stores stay consistent
+            # during the transition period.
+            self._resolve_pending_entries_legacy(ticker)
+            return
+
+        # Legacy path (no memory_provider)
+        self._resolve_pending_entries_legacy(ticker)
+
+    def _resolve_pending_entries_legacy(self, ticker: str) -> None:
         pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
         if not pending:
             return
@@ -340,6 +392,91 @@ class TradingAgentsGraph:
 
         if updates:
             self.memory_log.batch_update_with_outcomes(updates)
+
+    def _retrieve_agent_memories(
+        self, ticker: str, trade_date: str
+    ) -> dict[str, str]:
+        """Retrieve role-aware memories for all agents via the RAG provider.
+
+        Returns a dict of ``memory_{role}`` → formatted string suitable for
+        merging into the initial agent state.  Only roles that yield results
+        get a key; agents with no relevant history are unaffected.
+        """
+        from datetime import timezone
+
+        provider = self.memory_provider
+        trade_dt = datetime.fromisoformat(str(trade_date))
+        if trade_dt.tzinfo is None:
+            trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+
+        roles = [
+            "portfolio_manager",
+            "market_analyst",
+            "fundamentals_analyst",
+            "sentiment_analyst",
+            "news_analyst",
+            "bull_researcher",
+            "bear_researcher",
+        ]
+
+        result: dict[str, str] = {}
+        for role in roles:
+            try:
+                query = MemoryQuery(
+                    symbol=ticker,
+                    as_of=trade_dt,
+                    market=MarketSnapshot(symbol=ticker, as_of=trade_dt),
+                    portfolio=PortfolioState(
+                        as_of=trade_dt, cash=0, total_equity=0,
+                    ),
+                    limit=3,
+                    metadata={"agent_role": role},
+                )
+                ctx = provider.retrieve(query)
+                formatted = provider.format_context_for_prompt(ctx)
+                if formatted:
+                    result[f"memory_{role}"] = formatted
+            except Exception:
+                logger.debug(
+                    "Memory retrieval skipped for role=%s ticker=%s",
+                    role, ticker, exc_info=True,
+                )
+
+        # For backward compatibility: also set past_context from PM memory
+        if "memory_portfolio_manager" in result:
+            result["past_context"] = result["memory_portfolio_manager"]
+
+        return result
+
+    def _record_decision_via_provider(
+        self, ticker: str, trade_date: str, final_state: dict
+    ) -> None:
+        """Build a DecisionRecord and persist it via the memory provider."""
+        from datetime import timezone
+
+        trade_dt = datetime.fromisoformat(str(trade_date))
+        if trade_dt.tzinfo is None:
+            trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+
+        intent = TradeIntent(
+            decision_id=f"{ticker}-{trade_date}",
+            symbol=ticker,
+            as_of=trade_dt,
+            target_weight=0.0,
+            confidence=0.5,
+            rationale=final_state.get("final_trade_decision", ""),
+            warnings=[],
+        )
+        record = DecisionRecord(
+            intent=intent,
+            portfolio_before=PortfolioState(
+                as_of=trade_dt, cash=0, total_equity=0,
+            ),
+            market_at_decision=MarketSnapshot(
+                symbol=ticker, as_of=trade_dt,
+            ),
+        )
+        self.memory_provider.record_decision(record)
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
@@ -429,12 +566,23 @@ class TradingAgentsGraph:
         # deterministically resolved instrument identity for all agents.
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
+
+        # Enhanced memory path: when a provider is injected, retrieve role-aware
+        # memories for PM (and optionally other agents) via RAG.  Results are
+        # formatted as strings so existing agent prompt code needs no changes.
+        extra_state: dict[str, str] = {}
+        if self.memory_provider:
+            extra_state = self._retrieve_agent_memories(
+                company_name, trade_date
+            )
+
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            **(extra_state or {}),
         )
         args = self.propagator.get_graph_args()
 
@@ -473,6 +621,19 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
+        # Enhanced path: also persist via the RAG memory provider so the
+        # decision is immediately available for semantic retrieval.
+        if self.memory_provider:
+            try:
+                self._record_decision_via_provider(
+                    company_name, trade_date, final_state
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to record decision via memory provider — "
+                    "continuing with markdown log only."
+                )
+
         self.memory_log.store_decision(
             ticker=company_name,
             trade_date=trade_date,

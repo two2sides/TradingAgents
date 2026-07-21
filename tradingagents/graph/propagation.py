@@ -23,6 +23,7 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
+        **extra_state: str,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -31,8 +32,12 @@ class Propagator:
         ``TradingAgentsGraph.resolve_instrument_context``). When empty, agents
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
+
+        ``extra_state`` kwargs are merged directly into the returned dict,
+        allowing callers to inject per-agent memory fields without modifying
+        the propagation signature for each new agent role.
         """
-        return {
+        state = {
             "messages": [("human", company_name)],
             "run_id": f"run_{uuid4().hex}",
             "audit_events": [],
@@ -82,6 +87,8 @@ class Propagator:
             "sentiment_report": "",
             "news_report": "",
         }
+        state.update(extra_state)
+        return state
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:
         """Get arguments for the graph invocation.
