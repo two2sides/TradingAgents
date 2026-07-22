@@ -228,12 +228,15 @@ class BacktestRequest:
     end: datetime
     initial_cash: float
     lookback: int
+    decision_interval_bars: int
+    outcome_horizon_bars: int
     execution: ExecutionConfig
 
 class BacktestResult:
     decisions: list[DecisionEnvelope]
     executions: list[ExecutionReport]
     equity_curve: list[EquityPoint]
+    portfolio_history: list[PortfolioState]
     benchmark_curves: dict[str, list[EquityPoint]]
     metrics: dict[str, float]
     warnings: list[str]
@@ -242,9 +245,11 @@ class BacktestResult:
 `commission_rate` 和 `slippage_rate` 均为小数比例，例如 `0.001` 表示
 0.1%。第一版只支持 `NEXT_OPEN`，即决策产生后的下一个可交易开盘价成交；以后若增加成交策略，应扩展枚举而不是在实现中静默改变语义。
 
+`decision_interval_bars` 表示两次 Agent 决策之间间隔多少根共同可交易 K 线，默认 5；`outcome_horizon_bars` 表示经过多少根 K 线后将结果反馈给 B，默认也是 5。使用 K 线数量而不是“自然日/周”可以避免节假日语义不一致。
+
 `benchmark_curves` 的键是稳定、可展示的基准名称，例如
 `buy_and_hold`。WebUI 只消费公共结果对象，不直接访问 Broker、记忆库或
-Agent 的内部状态。
+Agent 的内部状态。`portfolio_history` 用于回放每个估值时点的现金、持仓、成本和权重，不要求 WebUI 重新推导账户状态。
 
 长回测可选传入进度观察者：
 

@@ -196,6 +196,8 @@ def test_backtest_request_has_explicit_execution_assumptions():
 
     assert request.execution.commission_rate == pytest.approx(0.001)
     assert request.execution.execution_policy == "NEXT_OPEN"
+    assert request.decision_interval_bars == 5
+    assert request.outcome_horizon_bars == 5
 
     with pytest.raises(ValidationError):
         ExecutionConfig(slippage_rate=1.1)
@@ -203,11 +205,16 @@ def test_backtest_request_has_explicit_execution_assumptions():
 
 def test_backtest_result_serializes_named_benchmark_curves():
     point = EquityPoint(timestamp=NOW, cash=0, total_equity=101_000)
-    result = BacktestResult(benchmark_curves={"buy_and_hold": [point]})
+    portfolio = make_portfolio()
+    result = BacktestResult(
+        benchmark_curves={"buy_and_hold": [point]},
+        portfolio_history=[portfolio],
+    )
 
     restored = BacktestResult.model_validate_json(result.model_dump_json())
 
     assert restored.benchmark_curves["buy_and_hold"] == [point]
+    assert restored.portfolio_history == [portfolio]
 
 
 def test_decision_provider_supports_structural_typing():

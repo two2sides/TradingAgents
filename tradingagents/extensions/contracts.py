@@ -336,6 +336,8 @@ class BacktestRequest(ContractModel):
     end: datetime
     initial_cash: float = Field(gt=0)
     lookback: int = Field(default=60, ge=1)
+    decision_interval_bars: int = Field(default=5, ge=1)
+    outcome_horizon_bars: int = Field(default=5, ge=1)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -370,6 +372,7 @@ class BacktestResult(ContractModel):
     decisions: list[DecisionEnvelope] = Field(default_factory=list)
     executions: list[ExecutionReport] = Field(default_factory=list)
     equity_curve: list[EquityPoint] = Field(default_factory=list)
+    portfolio_history: list[PortfolioState] = Field(default_factory=list)
     benchmark_curves: dict[str, list[EquityPoint]] = Field(default_factory=dict)
     metrics: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
