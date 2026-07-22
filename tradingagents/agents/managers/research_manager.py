@@ -33,6 +33,13 @@ def create_research_manager(llm):
             if claim.get("importance") in {"CRITICAL", "MAJOR"}
         ) or "- no structured claims available"
 
+        memory_context = state.get("memory_research_manager", "")
+        memory_block = (
+            f"- Lessons from past debate outcomes:\n{memory_context}\n"
+            if memory_context
+            else ""
+        )
+
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
@@ -50,6 +57,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 ---
 
+{memory_block}
 **Debate History:**
 {history}
 

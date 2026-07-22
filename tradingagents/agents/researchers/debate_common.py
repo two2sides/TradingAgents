@@ -118,6 +118,22 @@ def run_debate_turn(
     )
     already_used = set(investment_debate_state.get("used_tools", []))
     available_tools = available_debate_tools(already_used)
+
+    # Memory recall tool — not counted against the debate tool budget
+    provider = state.get("memory_provider")
+    if provider:
+        from tradingagents.extensions.memory.tools import create_memory_recall_tool
+
+        role = "bull_researcher" if side == "bull" else "bear_researcher"
+        available_tools = available_tools + [
+            create_memory_recall_tool(
+                provider,
+                state["company_of_interest"],
+                state["trade_date"],
+                role,
+            )
+        ]
+
     content, used_now, events = invoke_with_tools_audit(
         llm,
         available_tools,

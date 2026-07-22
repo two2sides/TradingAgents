@@ -35,6 +35,19 @@ def create_market_analyst(llm):
             detect_price_gap_for_ticker,
         ]
 
+        provider = state.get("memory_provider")
+        if provider:
+            from tradingagents.extensions.memory.tools import create_memory_recall_tool
+
+            tools.append(
+                create_memory_recall_tool(
+                    provider,
+                    state["company_of_interest"],
+                    state["trade_date"],
+                    "market_analyst",
+                )
+            )
+
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
 

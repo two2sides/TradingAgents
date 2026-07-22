@@ -31,8 +31,12 @@ class LocalEmbeddingBackend:
                 "sentence-transformers is required for local embeddings. "
                 "Install with: pip install sentence-transformers"
             )
-        logger.info("Loading embedding model %s (this may take a moment on first run)...", model_name)
-        self._model = SentenceTransformer(model_name)
+        logger.info("Loading embedding model %s...", model_name)
+        try:
+            self._model = SentenceTransformer(model_name, local_files_only=True)
+        except Exception:
+            logger.info("Model not cached — downloading from HuggingFace...")
+            self._model = SentenceTransformer(model_name)
         self.dim = self._model.get_embedding_dimension()
         logger.info("Embedding model loaded — %d dimensions.", self.dim)
 

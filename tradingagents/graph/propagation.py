@@ -23,7 +23,7 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
-        **extra_state: str,
+        **extra_state,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 

@@ -41,6 +41,19 @@ def create_news_analyst(llm):
             get_news,
             get_global_news,
         ]
+
+        provider = state.get("memory_provider")
+        if provider:
+            from tradingagents.extensions.memory.tools import create_memory_recall_tool
+
+            tools.append(
+                create_memory_recall_tool(
+                    provider,
+                    state["company_of_interest"],
+                    state["trade_date"],
+                    "news_analyst",
+                )
+            )
         existing = {
             (event.get("payload") or {}).get("tool_name"): event
             for event in state.get("audit_events", [])

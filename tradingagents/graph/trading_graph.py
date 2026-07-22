@@ -392,14 +392,12 @@ class TradingAgentsGraph:
         if trade_dt.tzinfo is None:
             trade_dt = trade_dt.replace(tzinfo=timezone.utc)
 
+        # Prompt-injected roles: pre-retrieve at graph start so their
+        # memory is always available.  Tool-based analysts (market,
+        # fundamentals, news, bull, bear) call the recall tool on demand.
         roles = [
             "portfolio_manager",
-            "market_analyst",
-            "fundamentals_analyst",
-            "sentiment_analyst",
-            "news_analyst",
-            "bull_researcher",
-            "bear_researcher",
+            "research_manager",
         ]
 
         result: dict[str, str] = {}
@@ -424,6 +422,9 @@ class TradingAgentsGraph:
                     "Memory retrieval skipped for role=%s ticker=%s",
                     role, ticker, exc_info=True,
                 )
+
+        # Make the provider available to tool-based agents
+        result["memory_provider"] = provider
 
         # For backward compatibility: also set past_context from PM memory
         if "memory_portfolio_manager" in result:
