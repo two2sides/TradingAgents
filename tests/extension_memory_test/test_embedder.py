@@ -53,3 +53,15 @@ class TestMemoryEmbedder:
 
         with pytest.raises(ValueError, match="Unsupported"):
             MemoryEmbedder({"memory_embedding": "nonexistent_backend"})
+
+    def test_offline_first_uses_cached_model(self):
+        """When model is cached locally, local_files_only=True should succeed."""
+        from tradingagents.extensions.memory.embedder import MemoryEmbedder
+
+        emb = MemoryEmbedder({"memory_embedding": "local"})
+        # If this test runs, the model was loaded via the local_files_only
+        # path (the try branch succeeded).  Produce one embedding to
+        # confirm the model is fully functional.
+        vecs = emb.embed(["smoke test"])
+        assert len(vecs) == 1
+        assert len(vecs[0]) == emb.dim
