@@ -71,6 +71,10 @@ def _coerce_max_retries(value):
 class TradingAgentsGraph:
     """Main class that orchestrates the trading agents framework."""
 
+    # Class-level default so tests that skip __init__ (MagicMock, object.__new__)
+    # can still safely access self.memory_provider without AttributeError.
+    memory_provider = None
+
     def __init__(
         self,
         selected_analysts=("market", "social", "news", "fundamentals"),
@@ -125,7 +129,8 @@ class TradingAgentsGraph:
         # Enhanced RAG memory provider (B-team).  When set, replaces
         # TradingMemoryLog for retrieval, recording, and outcome tracking.
         # Pass via config["memory_provider"] = EnhancedMemoryProvider(...).
-        self.memory_provider = self.config.get("memory_provider", None)
+        # Defaults to None to keep the markdown-based legacy path active.
+        self.memory_provider = self.config.get("memory_provider", None) if self.config else None
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -315,83 +320,61 @@ class TradingAgentsGraph:
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
-        When ``memory_provider`` is active, resolution is handled via
-        ``record_outcome()`` — the provider persists reflections and updates
-        embeddings so future retrievals benefit from the outcome knowledge.
-        Otherwise falls back to the markdown-based TradingMemoryLog.
+        When ``memory_provider`` is active, also pushes outcomes via
+        ``record_outcome()`` so the RAG store learns from the result.
+        The markdown log is always updated for backward compatibility.
         """
-        # Enhanced path: the provider manages its own outcome lifecycle.
-        # Pending entries in the markdown log are skipped; the provider
-        # will receive outcomes via record_outcome() after _fetch_returns.
-        if self.memory_provider:
-            pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
-            if not pending:
-                return
-            benchmark = self._resolve_benchmark(ticker)
-            for entry in pending:
-                raw, alpha, days = self._fetch_returns(
-                    ticker, entry["date"], benchmark=benchmark,
-                )
-                if raw is None:
-                    continue
-                from tradingagents.extensions.contracts import (
-                    DecisionOutcome,
-                    MemoryReference,
-                )
-                from datetime import datetime, timezone
-                reflection = self.reflector.reflect_on_final_decision(
-                    final_decision=entry.get("decision", ""),
-                    raw_return=raw,
-                    alpha_return=alpha,
-                    benchmark_name=benchmark,
-                )
-                self.memory_provider.record_outcome(
-                    MemoryReference(memory_id=entry.get("date", "")),
-                    DecisionOutcome(
-                        observed_at=datetime.now(timezone.utc),
-                        holding_period_return=raw,
-                        max_adverse_move=None,
-                        portfolio_impact=None,
-                    ),
-                )
-            # Also resolve in the legacy log so both stores stay consistent
-            # during the transition period.
-            self._resolve_pending_entries_legacy(ticker)
-            return
-
-        # Legacy path (no memory_provider)
-        self._resolve_pending_entries_legacy(ticker)
-
-    def _resolve_pending_entries_legacy(self, ticker: str) -> None:
         pending = [e for e in self.memory_log.get_pending_entries() if e["ticker"] == ticker]
         if not pending:
             return
 
         benchmark = self._resolve_benchmark(ticker)
-        updates = []
         for entry in pending:
             raw, alpha, days = self._fetch_returns(
                 ticker, entry["date"], benchmark=benchmark,
             )
             if raw is None:
                 continue  # price not available yet — try again next run
+
             reflection = self.reflector.reflect_on_final_decision(
                 final_decision=entry.get("decision", ""),
                 raw_return=raw,
                 alpha_return=alpha,
                 benchmark_name=benchmark,
             )
-            updates.append({
-                "ticker": ticker,
-                "trade_date": entry["date"],
-                "raw_return": raw,
-                "alpha_return": alpha,
-                "holding_days": days,
-                "reflection": reflection,
-            })
 
-        if updates:
-            self.memory_log.batch_update_with_outcomes(updates)
+            # Enhanced path: also record the outcome via the RAG provider
+            if self.memory_provider:
+                try:
+                    from tradingagents.extensions.contracts import (
+                        DecisionOutcome,
+                        MemoryReference,
+                    )
+                    from datetime import timezone
+                    self.memory_provider.record_outcome(
+                        MemoryReference(memory_id=f"{ticker}-{entry['date']}"),
+                        DecisionOutcome(
+                            observed_at=datetime.now(timezone.utc),
+                            holding_period_return=raw,
+                            max_adverse_move=None,
+                            portfolio_impact=None,
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "record_outcome via memory_provider failed for %s/%s",
+                        ticker, entry["date"], exc_info=True,
+                    )
+
+            # Always update the markdown log
+            self.memory_log.update_with_outcome(
+                ticker=ticker,
+                trade_date=entry["date"],
+                raw_return=raw,
+                alpha_return=alpha,
+                holding_days=days,
+                reflection=reflection,
+            )
 
     def _retrieve_agent_memories(
         self, ticker: str, trade_date: str
