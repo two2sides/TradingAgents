@@ -6,11 +6,17 @@ from .demo import DemoMemoryProvider, MovingAverageDecisionProvider
 from .ledger import AccountLedger, LedgerEntry
 from .market_data import HistoricalMarketDataProvider, MarketDataUnavailable
 from .observers import CompositeRunObserver, EventCollector
+from .replay import ReplayDecisionProvider, run_execution_what_if
+from .service import BacktestApplicationService
+from .storage import RunStoreObserver, SQLiteRunStore
+from .view_models import DecisionReplayItem, build_decision_replay
 
 __all__ = [
     "AccountLedger",
+    "BacktestApplicationService",
     "CompositeRunObserver",
     "DemoMemoryProvider",
+    "DecisionReplayItem",
     "EventCollector",
     "HistoricalBacktestRunner",
     "HistoricalMarketDataProvider",
@@ -18,4 +24,9 @@ __all__ = [
     "LedgerEntry",
     "MarketDataUnavailable",
     "MovingAverageDecisionProvider",
+    "ReplayDecisionProvider",
+    "RunStoreObserver",
+    "SQLiteRunStore",
+    "build_decision_replay",
+    "run_execution_what_if",
 ]
