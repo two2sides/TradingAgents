@@ -33,7 +33,7 @@ class LocalEmbeddingBackend:
             )
         logger.info("Loading embedding model %s (this may take a moment on first run)...", model_name)
         self._model = SentenceTransformer(model_name)
-        self.dim = self._model.get_sentence_embedding_dimension()
+        self.dim = self._model.get_embedding_dimension()
         logger.info("Embedding model loaded — %d dimensions.", self.dim)
 
     def encode(self, texts: list[str], normalize_embeddings: bool = True) -> list[list[float]]:

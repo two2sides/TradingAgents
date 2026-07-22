@@ -49,7 +49,9 @@ class TestRetrievalPipeline:
     def test_retrieve_returns_memory_context(self, chromadb_store, memory_embedder):
         from tradingagents.extensions.memory.retrieval import AgentAwareRetriever
 
-        _populate_store(chromadb_store, memory_embedder, n=3)
+        ids = _populate_store(chromadb_store, memory_embedder, n=3)
+        assert len(ids) > 0, "Store should have inserted records"
+
         retriever = AgentAwareRetriever(chromadb_store, memory_embedder)
         query = make_memory_query(symbol="AAPL", agent_role="portfolio_manager")
         profile = get_profile("portfolio_manager")
@@ -82,11 +84,13 @@ class TestRetrievalPipeline:
             assert item.score is not None
             assert 0 <= item.score <= 1.0, f"Score {item.score} out of [0,1]"
 
-    def test_empty_store_returns_empty_context(self, chromadb_store, memory_embedder):
+    def test_empty_store_returns_empty_context(self, tmp_path, memory_embedder):
         from tradingagents.extensions.memory.retrieval import AgentAwareRetriever
+        from tradingagents.extensions.memory.store import MemoryStore
 
-        # Use fresh, unpopulated store
-        retriever = AgentAwareRetriever(chromadb_store, memory_embedder)
+        # Truly fresh store — not the shared session fixture
+        store = MemoryStore(path=str(tmp_path / "empty_db"))
+        retriever = AgentAwareRetriever(store, memory_embedder)
         query = make_memory_query(symbol="AAPL")
         profile = get_profile("portfolio_manager")
 

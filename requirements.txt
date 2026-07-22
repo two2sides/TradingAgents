@@ -5,6 +5,9 @@
 #   pip install -r requirements.txt
 # Bedrock 可选: pip install "langchain-aws>=1.5.0"
 # 开发可选: pip install "ruff>=0.15" "pytest>=8.0" "pytest-subtests>=0.13"
+# 记忆增强（RAG）:
+#chromadb>=0.5 
+#sentence-transformers>=3.0
 
 # --- 核心框架 ---
 langchain-core>=0.3.81

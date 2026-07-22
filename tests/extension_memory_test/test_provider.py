@@ -120,7 +120,7 @@ class TestProviderIntegration:
     def test_retrieve_via_provider(self, chromadb_store, memory_embedder):
         from tradingagents.extensions.memory.provider import EnhancedMemoryProvider
 
-        config = {"memory_db_path": chromadb_store._client._path}
+        config = {"memory_db_path": chromadb_store.db_path}
         provider = EnhancedMemoryProvider.__new__(EnhancedMemoryProvider)
         provider.config = config
         provider.store = chromadb_store
@@ -143,7 +143,7 @@ class TestProviderIntegration:
     def test_record_decision_and_outcome_cycle(self, chromadb_store, memory_embedder):
         from tradingagents.extensions.memory.provider import EnhancedMemoryProvider
 
-        config = {"memory_db_path": chromadb_store._client._path}
+        config = {"memory_db_path": chromadb_store.db_path}
         provider = EnhancedMemoryProvider.__new__(EnhancedMemoryProvider)
         provider.config = config
         provider.store = chromadb_store

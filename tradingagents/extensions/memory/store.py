@@ -32,8 +32,19 @@ _KEY_TAGS = "agent_tags"
 _KEY_CONFIDENCE = "confidence"
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _to_ts(dt: datetime) -> float:
+    """Convert a datetime to Unix timestamp (float) for ChromaDB metadata.
+
+    ChromaDB's ``$lte`` / ``$gte`` only accept numeric operands.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _sanitize_meta(meta: dict) -> dict:
+    """Drop None values so ChromaDB never sees a non-metadata type."""
+    return {k: v for k, v in meta.items() if v is not None}
 
 
 class MemoryStore:
@@ -45,6 +56,8 @@ class MemoryStore:
             "memory_db_path",
             cfg.get("data_cache_dir", ".tradingagents") + "/memory_db",
         )
+
+        self._db_path = db_path
 
         try:
             import chromadb
@@ -73,6 +86,10 @@ class MemoryStore:
         """Direct ChromaDB collection access for retrieval layer."""
         return self._collection
 
+    @property
+    def db_path(self) -> str:
+        return self._db_path
+
     # ── Write path ──────────────────────────────────────────────────────
 
     def insert(
@@ -87,7 +104,7 @@ class MemoryStore:
         Returns the shared ``memory_id``.
         """
         memory_id = f"mem-{uuid.uuid4().hex[:12]}"
-        decision_at = record.intent.as_of.isoformat()
+        decision_ts = _to_ts(record.intent.as_of)
         tags_str = "|".join(agent_tags) if agent_tags else "general"
 
         ids: list[str] = []
@@ -104,8 +121,8 @@ class MemoryStore:
                 _KEY_MEMORY_ID: memory_id,
                 _KEY_CHUNK_TYPE: chunk["type"],
                 _KEY_SYMBOL: record.intent.symbol,
-                _KEY_DECISION_AT: decision_at,
-                _KEY_AVAILABLE_AT: decision_at,  # decision-time data available immediately
+                _KEY_DECISION_AT: decision_ts,
+                _KEY_AVAILABLE_AT: decision_ts,  # decision-time data available immediately
                 _KEY_TAGS: tags_str,
                 _KEY_CONFIDENCE: record.intent.confidence,
                 "outcome_raw": None,
@@ -113,7 +130,8 @@ class MemoryStore:
                 "outcome_quality": None,
             })
 
-        self._collection.add(ids=ids, embeddings=embs, documents=docs, metadatas=metas)
+        self._collection.add(ids=ids, embeddings=embs, documents=docs,
+                            metadatas=[_sanitize_meta(m) for m in metas])
         logger.debug("Inserted memory %s with %d chunks.", memory_id, len(chunks))
         return memory_id
 
@@ -135,7 +153,8 @@ class MemoryStore:
             meta["outcome_quality"] = quality
             new_metas.append(meta)
 
-        self._collection.update(ids=existing["ids"], metadatas=new_metas)
+        self._collection.update(ids=existing["ids"],
+                                metadatas=[_sanitize_meta(m) for m in new_metas])
         logger.debug("Updated outcome for %s (quality=%.2f).", memory_id, quality)
 
     def append_reflection_chunk(
@@ -144,27 +163,31 @@ class MemoryStore:
         content: str,
         embedding: list[float],
         symbol: str,
-        available_at: str,
+        available_at: datetime,
         agent_tags: str = "reflection",
     ) -> None:
-        """Add a reflection chunk to an existing memory."""
+        """Add a reflection chunk to an existing memory.
+
+        ``available_at`` is the time from which this reflection is safe to retrieve.
+        """
         chunk_id = f"{memory_id}-reflection"
+        now_ts = datetime.now(timezone.utc).timestamp()
         self._collection.add(
             ids=[chunk_id],
             embeddings=[embedding],
             documents=[content],
-            metadatas=[{
+            metadatas=[_sanitize_meta({
                 _KEY_MEMORY_ID: memory_id,
                 _KEY_CHUNK_TYPE: "reflection",
                 _KEY_SYMBOL: symbol,
-                _KEY_DECISION_AT: _utc_now(),
-                _KEY_AVAILABLE_AT: available_at,
+                _KEY_DECISION_AT: now_ts,
+                _KEY_AVAILABLE_AT: _to_ts(available_at),
                 _KEY_TAGS: agent_tags,
                 _KEY_CONFIDENCE: 0.0,
                 "outcome_raw": None,
                 "outcome_alpha": None,
                 "outcome_quality": None,
-            }],
+            })],
         )
         logger.debug("Appended reflection chunk to %s.", memory_id)
 

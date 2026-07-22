@@ -155,11 +155,8 @@ def has_embedder() -> bool:
     global _embedder_available
     if _embedder_available is None:
         try:
-            from tradingagents.extensions.memory.embedder import (
-                LocalEmbeddingBackend,
-            )
-            # Try actual instantiation, not just import
-            LocalEmbeddingBackend()
+            from tradingagents.extensions.memory.embedder import MemoryEmbedder
+            MemoryEmbedder()
             _embedder_available = True
         except Exception:
             _embedder_available = False
@@ -183,5 +180,4 @@ def memory_embedder():
     if not has_embedder():
         pytest.skip("sentence-transformers not installed")
     from tradingagents.extensions.memory.embedder import MemoryEmbedder
-
     return MemoryEmbedder()

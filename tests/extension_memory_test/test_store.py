@@ -96,7 +96,7 @@ class TestReflectionAppend:
             content="Lesson learned: patience pays.",
             embedding=[0.7] * 384,
             symbol="AAPL",
-            available_at="2026-08-01T00:00:00+00:00",
+            available_at=NOW,
         )
 
         after_ctx = chromadb_store.get_record_context(mid)

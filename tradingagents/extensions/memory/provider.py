@@ -171,7 +171,7 @@ class EnhancedMemoryProvider:
                     content=ref_chunk["content"],
                     embedding=ref_emb,
                     symbol=record_ctx["symbol"],
-                    available_at=outcome.observed_at.isoformat(),
+                    available_at=outcome.observed_at,
                 )
                 logger.info("record_outcome: reflection appended to %s.", memory_id)
 

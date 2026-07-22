@@ -27,26 +27,30 @@ if TYPE_CHECKING:
 _TIME_EPSILON = 1.0  # seconds
 
 
-def _parse_iso(ts_str: str) -> datetime:
-    """Parse an ISO timestamp string into a timezone-aware datetime."""
-    dt = datetime.fromisoformat(ts_str)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
+def _parse_ts(raw) -> datetime:
+    """Parse a stored timestamp (float Unix epoch or ISO string) into a UTC datetime."""
+    if isinstance(raw, (int, float)):
+        return datetime.fromtimestamp(raw, tz=timezone.utc)
+    if isinstance(raw, str):
+        dt = datetime.fromisoformat(raw)
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    return None
 
 
-def _days_decay(dt_str: str, as_of: datetime) -> float:
+def _days_decay(raw, as_of: datetime) -> float:
     """Exponential recency decay based on days elapsed.
 
     Returns a value in (0, 1] where 1.0 = same-day and ~0.05 after 60 days.
     """
     try:
-        decision_dt = _parse_iso(dt_str)
+        decision_dt = _parse_ts(raw)
     except (ValueError, TypeError):
+        return 0.1
+    if decision_dt is None:
         return 0.1
     days = (as_of - decision_dt).total_seconds() / 86400.0
     if days < 0:
-        return 0.0  # future decision — shouldn't happen after time filtering
+        return 0.0
     return math.exp(-0.05 * days)
 
 
@@ -116,8 +120,8 @@ class AgentAwareRetriever:
 
         # Build ChromaDB where clause for time-safety and symbol filtering
         where_parts: list[dict] = [
-            {  # available_at must not be later than as_of
-                "available_at": {"$lte": kwargs["as_of"].isoformat()}
+            {  # available_at must not be later than as_of (stored as Unix ts)
+                "available_at": {"$lte": kwargs["as_of"].timestamp()}
             }
         ]
         if not kwargs["cross_ticker"]:
@@ -159,14 +163,8 @@ class AgentAwareRetriever:
         # ── Step 5: Build MemoryItems ──
         items: list[MemoryItem] = []
         for score, data in top:
-            try:
-                decision_at = _parse_iso(data.get("decision_at", kwargs["as_of"].isoformat()))
-            except (ValueError, TypeError):
-                decision_at = kwargs["as_of"]
-            try:
-                available_at = _parse_iso(data.get("available_at", kwargs["as_of"].isoformat()))
-            except (ValueError, TypeError):
-                available_at = kwargs["as_of"]
+            decision_at = _parse_ts(data.get("decision_at")) or kwargs["as_of"]
+            available_at = _parse_ts(data.get("available_at")) or kwargs["as_of"]
 
             items.append(MemoryItem(
                 memory_id=data["memory_id"],
