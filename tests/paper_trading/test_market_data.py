@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from tradingagents.extensions.contracts import MarketBar
+from tradingagents.extensions.paper_trading.demo import generate_demo_market_data
 from tradingagents.extensions.paper_trading.market_data import (
     HistoricalMarketDataProvider,
     MarketDataUnavailable,
@@ -82,3 +83,16 @@ def test_dataframe_adapter_normalizes_columns_and_naive_timestamps():
     assert len(snapshot.bars) == 2
     assert snapshot.bars[-1].timestamp.tzinfo == timezone.utc
     assert snapshot.metadata["source"] == "dataframe"
+
+
+def test_built_in_demo_data_is_deterministic_and_needs_no_network():
+    end = START + timedelta(days=15)
+
+    first = generate_demo_market_data(["AAPL", "MSFT"], START, end)
+    second = generate_demo_market_data(["AAPL", "MSFT"], START, end)
+
+    assert first.export_bars(["AAPL", "MSFT"], START, end) == second.export_bars(
+        ["AAPL", "MSFT"], START, end
+    )
+    assert first.source == "built-in-demo"
+    assert len(first.common_calendar(["AAPL", "MSFT"], START, end)) >= 10

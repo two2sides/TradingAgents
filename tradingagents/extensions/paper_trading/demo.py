@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+
 from tradingagents.extensions.contracts import (
     DecisionEnvelope,
     DecisionOutcome,
     DecisionRecord,
     DecisionRequest,
+    MarketBar,
     MemoryContext,
     MemoryItem,
     MemoryQuery,
@@ -14,6 +19,50 @@ from tradingagents.extensions.contracts import (
     TraceEvent,
     TradeIntent,
 )
+
+from .market_data import HistoricalMarketDataProvider, as_utc
+
+
+def generate_demo_market_data(
+    symbols: Sequence[str],
+    start: datetime,
+    end: datetime,
+) -> HistoricalMarketDataProvider:
+    """Create deterministic weekday bars for a zero-key, zero-network demo."""
+
+    start_at, end_at = as_utc(start), as_utc(end)
+    bars_by_symbol: dict[str, list[MarketBar]] = {}
+    for symbol_index, symbol in enumerate(symbols):
+        bars: list[MarketBar] = []
+        timestamp = start_at
+        trading_index = 0
+        base = 75 + sum(ord(character) for character in symbol.upper()) % 90
+        phase = symbol_index * 0.9 + base / 50
+        previous_close = float(base)
+        while timestamp <= end_at:
+            if timestamp.weekday() < 5:
+                cycle = 0.035 * math.sin(trading_index / 7 + phase)
+                secondary = 0.012 * math.sin(trading_index / 2.7 + phase / 2)
+                trend = 0.0012 * trading_index
+                close = base * (1 + trend + cycle + secondary)
+                open_price = previous_close * (1 + 0.0025 * math.sin(trading_index * 1.7 + phase))
+                high = max(open_price, close) * 1.008
+                low = min(open_price, close) * 0.992
+                bars.append(
+                    MarketBar(
+                        timestamp=timestamp,
+                        open=open_price,
+                        high=high,
+                        low=low,
+                        close=close,
+                        volume=1_000_000 + 75_000 * (1 + math.sin(trading_index / 3)),
+                    )
+                )
+                previous_close = close
+                trading_index += 1
+            timestamp += timedelta(days=1)
+        bars_by_symbol[symbol] = bars
+    return HistoricalMarketDataProvider(bars_by_symbol, source="built-in-demo")
 
 
 class DemoMemoryProvider:
@@ -143,4 +192,8 @@ class MovingAverageDecisionProvider:
         )
 
 
-__all__ = ["DemoMemoryProvider", "MovingAverageDecisionProvider"]
+__all__ = [
+    "DemoMemoryProvider",
+    "MovingAverageDecisionProvider",
+    "generate_demo_market_data",
+]

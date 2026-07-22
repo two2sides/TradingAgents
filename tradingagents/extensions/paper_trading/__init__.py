@@ -2,7 +2,7 @@
 
 from .backtest import HistoricalBacktestRunner
 from .broker import LedgerBroker
-from .demo import DemoMemoryProvider, MovingAverageDecisionProvider
+from .demo import DemoMemoryProvider, MovingAverageDecisionProvider, generate_demo_market_data
 from .ledger import AccountLedger, LedgerEntry
 from .market_data import HistoricalMarketDataProvider, MarketDataUnavailable
 from .observers import CompositeRunObserver, EventCollector
@@ -28,5 +28,6 @@ __all__ = [
     "RunStoreObserver",
     "SQLiteRunStore",
     "build_decision_replay",
+    "generate_demo_market_data",
     "run_execution_what_if",
 ]

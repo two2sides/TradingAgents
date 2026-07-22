@@ -40,6 +40,10 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
 ]
+webui = [
+    "plotly>=6.0,<7",
+    "streamlit>=1.50,<2",
+]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
 bedrock = [
@@ -56,10 +60,11 @@ memory = [
 tradingagents = "cli.main:app"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "webui*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
+webui = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

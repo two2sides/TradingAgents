@@ -17,7 +17,7 @@ class BacktestApplicationService:
 
     def __init__(
         self,
-        market_data: HistoricalMarketDataProvider,
+        market_data: HistoricalMarketDataProvider | None,
         store: SQLiteRunStore,
     ) -> None:
         self.market_data = market_data
@@ -32,6 +32,8 @@ class BacktestApplicationService:
         label: str | None = None,
         observer: RunObserver | None = None,
     ) -> StoredRun:
+        if self.market_data is None:
+            raise ValueError("market_data is required for a full backtest")
         run_id = self.store.create_run(request, label=label)
         store_observer = RunStoreObserver(self.store, run_id)
         combined: RunObserver = (
