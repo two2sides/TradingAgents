@@ -14,11 +14,13 @@ if TYPE_CHECKING:
     from tradingagents.extensions.contracts import MemoryQuery
 
 
-def _compute_basic_features(bars: list) -> dict[str, float]:
+def _compute_basic_features(bars: list) -> dict[str, object]:
     """Extract lightweight features from OHLCV bars for query construction.
 
-    Returns a dict of feature_name → value that profiles can reference in
-    their query templates.  All computations are deterministic and side-effect-free.
+    Returns a dict of feature_name → value (float or str) that profiles can
+    reference in their ``str.format()`` query templates.  String features
+    (e.g. trend direction labels) are pre-computed so templates never contain
+    inline expressions — ``str.format()`` does not support those.
     """
     if not bars or len(bars) < 2:
         return {}
@@ -26,45 +28,45 @@ def _compute_basic_features(bars: list) -> dict[str, float]:
     closes = [b.close for b in bars]
     volumes = [b.volume for b in bars]
 
-    features: dict[str, float] = {}
+    features: dict[str, object] = {}
 
     # Recent return (last 5 bars or all available)
     window = min(5, len(closes) - 1)
     if window > 0:
-        features["return_5d"] = (closes[-1] / closes[-window - 1] - 1) * 100
+        features["return_5d"] = round((closes[-1] / closes[-window - 1] - 1) * 100, 1)
+        features["return_5d_signed"] = f"{features['return_5d']:+.1f}%"
 
-    # Volatility (std of daily returns, annualised approx)
+    # Volatility (std of daily returns)
     if len(closes) >= 5:
         daily_rets = [
             (closes[i] / closes[i - 1] - 1) for i in range(1, len(closes))
         ]
         mean_ret = sum(daily_rets) / len(daily_rets)
         variance = sum((r - mean_ret) ** 2 for r in daily_rets) / len(daily_rets)
-        features["volatility"] = (variance ** 0.5) * 100  # daily σ in %
+        features["volatility"] = round((variance ** 0.5) * 100, 1)
 
     # Volume trend (last 5 vs prior)
     if len(volumes) >= 10:
         recent_vol = sum(volumes[-5:]) / 5
         prior_vol = sum(volumes[-10:-5]) / 5
-        features["volume_ratio"] = recent_vol / prior_vol if prior_vol > 0 else 1.0
+        features["volume_ratio"] = round(recent_vol / prior_vol if prior_vol > 0 else 1.0, 2)
 
-    # Trend direction
+    # Trend direction — pre-computed string for str.format()
     if len(closes) >= 10:
         ma_short = sum(closes[-5:]) / 5
         ma_long = sum(closes[-10:]) / 10
-        features["trend"] = 1.0 if ma_short > ma_long else -1.0
+        features["trend_direction"] = "bullish" if ma_short > ma_long else "bearish"
 
     # Price relative to recent range
     if len(closes) >= 20:
         high = max(closes[-20:])
         low = min(closes[-20:])
-        features["price_position"] = (
-            (closes[-1] - low) / (high - low) if high != low else 0.5
-        )
+        pos = (closes[-1] - low) / (high - low) if high != low else 0.5
+        features["price_position"] = round(pos, 2)
 
     # Average bar range (high-low spread)
     spreads = [(b.high - b.low) / b.close for b in bars[-10:]]
-    features["avg_spread"] = (sum(spreads) / len(spreads)) * 100
+    features["avg_spread"] = round((sum(spreads) / len(spreads)) * 100, 1)
 
     return features
 
@@ -94,7 +96,14 @@ class AgentMemoryProfile:
         """Construct a role-specific natural-language query from market state."""
         features = _compute_basic_features(query.market.bars)
         template = _QUERY_TEMPLATES.get(self.role, _QUERY_TEMPLATES["portfolio_manager"])
-        return template.format(symbol=query.symbol, **features)
+        # Merge defaults under features so str.format() never hits a missing key
+        defaults = {
+            "return_5d": "n/a", "return_5d_signed": "n/a",
+            "volatility": "n/a", "volume_ratio": "n/a",
+            "trend_direction": "neutral", "price_position": "n/a",
+            "avg_spread": "n/a",
+        }
+        return template.format(symbol=query.symbol, **{**defaults, **features})
 
     def to_retrieval_kwargs(self, query: MemoryQuery) -> dict:
         """Convert profile + query into kwargs for the retrieval pipeline."""
@@ -127,9 +136,9 @@ _QUERY_TEMPLATES: dict[str, str] = {
     ),
     "market_analyst": (
         "Technical analysis pattern for {symbol}. "
-        "Recent price return {return_5d:+.1f}%, volatility {volatility:.1f}%, "
-        "volume ratio {volume_ratio:.2f}x, trend direction {'bullish' if trend>0 else 'bearish'}, "
-        "price at {price_position:.0%} of recent range, spread {avg_spread:.1f}%. "
+        "Recent price return {return_5d_signed}, volatility {volatility}%, "
+        "volume ratio {volume_ratio}x, trend direction {trend_direction}, "
+        "price at {price_position} of recent range, spread {avg_spread}%. "
         "Similar technical conditions where trading decisions were made "
         "and what the outcomes revealed about the pattern reliability."
     ),
@@ -193,8 +202,8 @@ _QUERY_TEMPLATES: dict[str, str] = {
         "macro context, risk-reward calibration, and debate resolution. "
         "Past decisions across all dimensions — what patterns of evidence "
         "led to correct calls and what blind spots caused mistakes. "
-        "Current market: return {return_5d:+.1f}%, volatility {volatility:.1f}%, "
-        "volume ratio {volume_ratio:.2f}x, price at {price_position:.0%} of range."
+        "Current market: return {return_5d_signed}, volatility {volatility}%, "
+        "volume ratio {volume_ratio}x, price at {price_position} of range."
     ),
 }
 
