@@ -210,20 +210,58 @@ class BacktestRunner(Protocol):
         request: BacktestRequest,
         decision_provider: DecisionProvider,
         memory_provider: MemoryProvider,
+        observer: RunObserver | None = None,
     ) -> BacktestResult:
         ...
 ```
 
 ```python
+class ExecutionConfig:
+    commission_rate: float = 0.0005
+    slippage_rate: float = 0.001
+    minimum_fee: float = 0
+    execution_policy: Literal["NEXT_OPEN"] = "NEXT_OPEN"
+
+class BacktestRequest:
+    symbols: list[str]
+    start: datetime
+    end: datetime
+    initial_cash: float
+    lookback: int
+    execution: ExecutionConfig
+
 class BacktestResult:
     decisions: list[DecisionEnvelope]
     executions: list[ExecutionReport]
     equity_curve: list[EquityPoint]
+    benchmark_curves: dict[str, list[EquityPoint]]
     metrics: dict[str, float]
     warnings: list[str]
 ```
 
-WebUI 只消费公共结果对象，不直接访问 Broker、记忆库或 Agent 的内部状态。
+`commission_rate` 和 `slippage_rate` 均为小数比例，例如 `0.001` 表示
+0.1%。第一版只支持 `NEXT_OPEN`，即决策产生后的下一个可交易开盘价成交；以后若增加成交策略，应扩展枚举而不是在实现中静默改变语义。
+
+`benchmark_curves` 的键是稳定、可展示的基准名称，例如
+`buy_and_hold`。WebUI 只消费公共结果对象，不直接访问 Broker、记忆库或
+Agent 的内部状态。
+
+长回测可选传入进度观察者：
+
+```python
+class RunEvent:
+    timestamp: datetime
+    stage: str
+    message: str
+    progress: float | None  # 0 到 1
+    payload: dict[str, Any]
+
+class RunObserver(Protocol):
+    def on_event(self, event: RunEvent) -> None:
+        ...
+```
+
+观察者只接收事件，不控制回测流程；CLI、测试和 WebUI 可以分别提供自己的实现，B、C 不需要依赖 Streamlit。
 
 ## 6. B 提供的公共接口
 
@@ -402,6 +440,7 @@ tradingagents/extensions/
 
 ```python
 from tradingagents.extensions.contracts import (
+    BacktestRequest,
     DecisionEnvelope,
     DecisionRequest,
     ExecutionReport,
@@ -410,9 +449,11 @@ from tradingagents.extensions.contracts import (
     TradeIntent,
 )
 from tradingagents.extensions.protocols import (
+    BacktestRunner,
     Broker,
     DecisionProvider,
     MemoryProvider,
+    RunObserver,
 )
 ```
 

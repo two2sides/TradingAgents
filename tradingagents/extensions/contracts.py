@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DecisionStatus = Literal["SUCCESS", "DEGRADED", "FAILED_SAFE"]
+ExecutionPolicy = Literal["NEXT_OPEN"]
 ExecutionStatus = Literal["FILLED", "PARTIAL", "REJECTED", "NO_ACTION"]
 OrderSide = Literal["BUY", "SELL"]
 
@@ -314,6 +315,19 @@ class EquityPoint(ContractModel):
     total_equity: float = Field(ge=0)
 
 
+class ExecutionConfig(ContractModel):
+    """Public execution assumptions shared by backtests and the WebUI.
+
+    Commission and slippage rates are decimal fractions.  For example,
+    ``0.001`` means 0.1 percent.
+    """
+
+    commission_rate: float = Field(default=0.0005, ge=0, le=1)
+    slippage_rate: float = Field(default=0.001, ge=0, le=1)
+    minimum_fee: float = Field(default=0, ge=0)
+    execution_policy: ExecutionPolicy = "NEXT_OPEN"
+
+
 class BacktestRequest(ContractModel):
     """Implementation-neutral request to run a historical simulation."""
 
@@ -322,6 +336,7 @@ class BacktestRequest(ContractModel):
     end: datetime
     initial_cash: float = Field(gt=0)
     lookback: int = Field(default=60, ge=1)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("symbols")
@@ -339,12 +354,23 @@ class BacktestRequest(ContractModel):
         return self
 
 
+class RunEvent(ContractModel):
+    """One implementation-neutral progress event emitted during a run."""
+
+    timestamp: datetime
+    stage: str = Field(min_length=1)
+    message: str
+    progress: float | None = Field(default=None, ge=0, le=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class BacktestResult(ContractModel):
     """Public result consumed by evaluation code and the WebUI."""
 
     decisions: list[DecisionEnvelope] = Field(default_factory=list)
     executions: list[ExecutionReport] = Field(default_factory=list)
     equity_curve: list[EquityPoint] = Field(default_factory=list)
+    benchmark_curves: dict[str, list[EquityPoint]] = Field(default_factory=dict)
     metrics: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -359,6 +385,8 @@ __all__ = [
     "DecisionRecord",
     "DecisionStatus",
     "EquityPoint",
+    "ExecutionConfig",
+    "ExecutionPolicy",
     "ExecutionQuote",
     "ExecutionReport",
     "ExecutionStatus",
@@ -372,6 +400,7 @@ __all__ = [
     "OrderSide",
     "PortfolioState",
     "Position",
+    "RunEvent",
     "TraceEvent",
     "TradeIntent",
 ]

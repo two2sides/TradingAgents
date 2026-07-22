@@ -24,6 +24,7 @@ from .contracts import (
     MemoryQuery,
     MemoryReference,
     PortfolioState,
+    RunEvent,
     TradeIntent,
 )
 
@@ -82,6 +83,13 @@ class DecisionProvider(Protocol):
 
 
 @runtime_checkable
+class RunObserver(Protocol):
+    """Receive optional progress events without coupling a runner to its UI."""
+
+    def on_event(self, event: RunEvent) -> None: ...
+
+
+@runtime_checkable
 class BacktestRunner(Protocol):
     """A: orchestrate historical time without knowing B or C internals."""
 
@@ -90,6 +98,7 @@ class BacktestRunner(Protocol):
         request: BacktestRequest,
         decision_provider: DecisionProvider,
         memory_provider: MemoryProvider,
+        observer: RunObserver | None = None,
     ) -> BacktestResult: ...
 
 
@@ -99,4 +108,5 @@ __all__ = [
     "DecisionProvider",
     "MarketDataProvider",
     "MemoryProvider",
+    "RunObserver",
 ]

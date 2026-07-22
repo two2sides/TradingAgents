@@ -7,7 +7,10 @@ from pydantic import ValidationError
 
 from tradingagents.extensions.contracts import (
     BacktestRequest,
+    BacktestResult,
     DecisionRequest,
+    EquityPoint,
+    ExecutionConfig,
     ExecutionReport,
     MarketBar,
     MarketSnapshot,
@@ -15,9 +18,10 @@ from tradingagents.extensions.contracts import (
     MemoryItem,
     PortfolioState,
     Position,
+    RunEvent,
     TradeIntent,
 )
-from tradingagents.extensions.protocols import DecisionProvider
+from tradingagents.extensions.protocols import DecisionProvider, RunObserver
 
 NOW = datetime(2026, 7, 21, 16, 0, tzinfo=timezone.utc)
 
@@ -177,9 +181,46 @@ def test_backtest_request_normalizes_symbols_and_rejects_duplicates():
         )
 
 
+def test_backtest_request_has_explicit_execution_assumptions():
+    request = BacktestRequest(
+        symbols=["AAPL"],
+        start=NOW - timedelta(days=30),
+        end=NOW,
+        initial_cash=100_000,
+        execution=ExecutionConfig(
+            commission_rate=0.001,
+            slippage_rate=0.002,
+            minimum_fee=1,
+        ),
+    )
+
+    assert request.execution.commission_rate == pytest.approx(0.001)
+    assert request.execution.execution_policy == "NEXT_OPEN"
+
+    with pytest.raises(ValidationError):
+        ExecutionConfig(slippage_rate=1.1)
+
+
+def test_backtest_result_serializes_named_benchmark_curves():
+    point = EquityPoint(timestamp=NOW, cash=0, total_equity=101_000)
+    result = BacktestResult(benchmark_curves={"buy_and_hold": [point]})
+
+    restored = BacktestResult.model_validate_json(result.model_dump_json())
+
+    assert restored.benchmark_curves["buy_and_hold"] == [point]
+
+
 def test_decision_provider_supports_structural_typing():
     class StubDecisionProvider:
         def decide(self, request):
             raise NotImplementedError
 
     assert isinstance(StubDecisionProvider(), DecisionProvider)
+
+
+def test_run_observer_supports_structural_typing():
+    class StubRunObserver:
+        def on_event(self, event: RunEvent) -> None:
+            pass
+
+    assert isinstance(StubRunObserver(), RunObserver)
