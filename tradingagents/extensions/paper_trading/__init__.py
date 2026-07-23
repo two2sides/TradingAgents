@@ -3,6 +3,11 @@
 from .backtest import HistoricalBacktestRunner
 from .broker import LedgerBroker
 from .demo import DemoMemoryProvider, MovingAverageDecisionProvider, generate_demo_market_data
+from .integrations import (
+    AllocationDecision,
+    RatingAllocationPolicy,
+    TradingAgentsGraphDecisionProvider,
+)
 from .ledger import AccountLedger, LedgerEntry
 from .market_data import HistoricalMarketDataProvider, MarketDataUnavailable
 from .observers import CompositeRunObserver, EventCollector
@@ -13,6 +18,7 @@ from .view_models import DecisionReplayItem, build_decision_replay
 
 __all__ = [
     "AccountLedger",
+    "AllocationDecision",
     "BacktestApplicationService",
     "CompositeRunObserver",
     "DemoMemoryProvider",
@@ -24,9 +30,11 @@ __all__ = [
     "LedgerEntry",
     "MarketDataUnavailable",
     "MovingAverageDecisionProvider",
+    "RatingAllocationPolicy",
     "ReplayDecisionProvider",
     "RunStoreObserver",
     "SQLiteRunStore",
+    "TradingAgentsGraphDecisionProvider",
     "build_decision_replay",
     "generate_demo_market_data",
     "run_execution_what_if",

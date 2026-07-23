@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def main() -> None:
     st.set_page_config(
         page_title="TradingAgents · Decision Lab",
-        page_icon="◈",
+        page_icon=":material/finance_mode:",
         layout="wide",
         initial_sidebar_state="expanded",
         menu_items={

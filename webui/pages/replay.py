@@ -158,11 +158,24 @@ def _render_decision_audit(result) -> None:
     ]
     if execution is not None:
         badges.append((execution.status, _tone(execution.status)))
+    rating = intent.metadata.get("rating")
+    if rating:
+        badges.append((str(rating).upper(), "green"))
     render_badges(badges)
+    confidence_label = (
+        "Translation integrity"
+        if intent.metadata.get("confidence_semantics")
+        == "deterministic rating-translation integrity"
+        else "Confidence"
+    )
     render_metric_grid(
         [
             {"label": "Target weight", "value": f"{intent.target_weight:.1%}", "tone": "amber"},
-            {"label": "Confidence", "value": f"{intent.confidence:.1%}", "tone": "cyan"},
+            {
+                "label": confidence_label,
+                "value": f"{intent.confidence:.1%}",
+                "tone": "cyan",
+            },
             {
                 "label": "Before",
                 "value": format_percent(
@@ -187,6 +200,16 @@ def _render_decision_audit(result) -> None:
         ]
     )
     render_callout("Agent rationale", intent.rationale, tone="amber")
+    allocation = intent.metadata.get("allocation")
+    if isinstance(allocation, dict) and allocation.get("rule"):
+        render_callout(
+            "Rating → allocation",
+            (
+                f"{allocation.get('rating')} · {allocation.get('rule')} · "
+                f"diversification cap {float(allocation.get('diversification_cap', 0)):.1%}"
+            ),
+            tone="cyan",
+        )
     if intent.warnings:
         render_callout("Decision warnings", " · ".join(intent.warnings), tone="red")
 
@@ -231,8 +254,14 @@ def _render_decision_audit(result) -> None:
         _render_portfolio(item.portfolio_before, "Portfolio before")
         _render_portfolio(item.portfolio_after, "Portfolio after")
 
-    memory_tab, trace_tab, ledger_tab, diagnostics_tab = st.tabs(
-        ["Retrieved memory", "Agent trace", "Ledger evidence", "Diagnostics"]
+    memory_tab, dossier_tab, trace_tab, ledger_tab, diagnostics_tab = st.tabs(
+        [
+            "Retrieved memory",
+            "Agent dossier",
+            "Agent trace",
+            "Ledger evidence",
+            "Diagnostics",
+        ]
     )
     with memory_tab:
         if item.memory is None:
@@ -247,6 +276,8 @@ def _render_decision_audit(result) -> None:
                         )
             else:
                 st.caption("No time-safe prior outcomes were available at this point.")
+    with dossier_tab:
+        _render_agent_dossier(decision)
     with trace_tab:
         if decision.trace:
             st.dataframe(
@@ -273,6 +304,54 @@ def _render_decision_audit(result) -> None:
             st.caption("This decision did not change the account ledger.")
     with diagnostics_tab:
         st.json(decision.diagnostics or {"message": "No diagnostics emitted."})
+
+
+def _render_agent_dossier(decision) -> None:
+    diagnostics = decision.diagnostics or {}
+    reports = diagnostics.get("agent_reports")
+    if not isinstance(reports, dict) or not any(reports.values()):
+        st.caption("This provider did not emit a multi-agent report dossier.")
+        return
+
+    render_badges(
+        [
+            (f"RATING {diagnostics.get('rating') or 'UNKNOWN'}", "amber"),
+            (f"GRAPH SIGNAL {diagnostics.get('graph_signal') or 'UNKNOWN'}", "cyan"),
+            (
+                f"PARSE {str(diagnostics.get('rating_parse_source') or 'UNKNOWN').upper()}",
+                "green",
+            ),
+        ]
+    )
+    audit_counts = [
+        ("Decision snapshots", len(diagnostics.get("decision_snapshots") or [])),
+        ("Structured calls", len(diagnostics.get("structured_invocations") or [])),
+        ("Claims", len(diagnostics.get("claims") or [])),
+        ("Audit events", len(diagnostics.get("audit_events") or [])),
+    ]
+    with st.container(horizontal=True):
+        for label, value in audit_counts:
+            st.metric(label, value, border=True)
+
+    stages = [
+        ("market", "Market analyst", ":material/candlestick_chart:"),
+        ("fundamentals", "Fundamentals analyst", ":material/account_balance:"),
+        ("sentiment", "Sentiment analyst", ":material/forum:"),
+        ("news", "News analyst", ":material/newspaper:"),
+        ("research_plan", "Research manager", ":material/science:"),
+        ("trader_plan", "Trader", ":material/swap_horiz:"),
+        ("final_decision", "Portfolio manager", ":material/gavel:"),
+    ]
+    for key, label, icon in stages:
+        content = str(reports.get(key) or "").strip()
+        if not content:
+            continue
+        with st.expander(
+            label,
+            expanded=key == "final_decision",
+            icon=icon,
+        ):
+            st.markdown(content)
 
 
 def _render_what_if(store, stored) -> None:

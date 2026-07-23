@@ -27,6 +27,19 @@ def test_decision_lab_pages_and_builtin_run_render(monkeypatch, tmp_path):
 
     run_app = AppTest.from_file(Path("webui/views/run.py"), default_timeout=30).run()
     assert not run_app.exception
+    engine = next(
+        control for control in run_app.segmented_control if control.label == "Decision engine"
+    )
+    engine.set_value("TradingAgents + RAG")
+    run_app.run(timeout=30)
+    assert not run_app.exception
+    assert any(widget.label == "Agent analysts" for widget in run_app.multiselect)
+
+    engine = next(
+        control for control in run_app.segmented_control if control.label == "Decision engine"
+    )
+    engine.set_value("Fast demo")
+    run_app.run(timeout=30)
     launch = next(button for button in run_app.button if button.label == "Launch historical replay")
     launch.click()
     run_app.run(timeout=30)

@@ -218,7 +218,11 @@ class HistoricalBacktestRunner:
                 market=market,
                 portfolio=portfolio,
                 memory=memory,
-                metadata={"backtest": True},
+                metadata={
+                    "backtest": True,
+                    "universe_size": len(request.symbols),
+                    "universe_symbols": list(request.symbols),
+                },
             )
             envelope = self._decide_safely(
                 request=decision_request,

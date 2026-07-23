@@ -41,7 +41,9 @@ Backtest Application Service ─────── RunStore (SQLite)
     │                         └────── RunObserver
     ├── MarketDataProvider
     ├── MemoryProvider (B)
-    ├── DecisionProvider (C)
+    ├── TradingAgentsGraphDecisionProvider
+    │       ├── TradingAgentsGraph (C 的五级评级)
+    │       └── RatingAllocationPolicy (评级 → 目标仓位)
     └── LedgerBroker
             └── immutable LedgerEntry events
 ```
@@ -58,6 +60,7 @@ tradingagents/extensions/paper_trading/
 ├── storage.py         # SQLite 运行档案
 ├── replay.py          # 执行层 What-if
 ├── demo.py            # 不依赖 LLM 的离线/演示 Provider
+├── integrations.py    # 真实 Agent 图适配与显式评级仓位策略
 └── observers.py       # 组合、记录进度事件
 
 webui/
@@ -121,11 +124,27 @@ webui/
 ### M5：集成与演示加固
 
 - [x] 用 B/C 的 Mock 完成全链路契约测试。
-- [ ] 接入真实 B/C 实现时不修改 A 的 Broker 和 WebUI。
+- [x] 接入 B 的 `EnhancedMemoryProvider` 和 C 所在的默认 `TradingAgentsGraph`。
+- [x] 以请求级只读桥接把 B 的时点安全记忆注入 C，避免重复检索和重复写入。
+- [x] 以显式、可配置的 `RatingAllocationPolicy` 把五级评级转换为目标仓位。
+- [x] WebUI 可在确定性演示与真实 `TradingAgents + RAG` 两种引擎间切换。
 - [x] 准备一个短周期快速演示数据集和一个完整结果样例。
 - [x] 补充启动命令、故障提示和演示说明。
 
-真实 B/C 接入项需要等待对应负责人交付实现；A 侧已经通过公共协议和 Demo Provider 验证替换边界。
+真实路径没有修改 Broker、账本、回测循环和运行存储。适配层位于 A 的
+`paper_trading/integrations.py`，因此 C 仍然只负责最终评级，B 仍然只负责
+记忆；评级如何变成可执行仓位是可单测、可替换的集成政策。
+
+默认仓位政策使用 35% 单标的建仓上限，并同时应用 `1/N` 分散上限：
+
+- `Buy`：只增不减，向建仓上限靠拢；
+- `Overweight`：只增不减，目标为上限的 75%；
+- `Hold`：保持当前仓位；
+- `Underweight`：只减不增，目标不高于上限的 25%；
+- `Sell`：目标仓位为 0。
+
+这不是 C 的内部实现假设，而是 C 的五级评级与 A 的连续目标仓位契约之间必须
+存在的明确执行政策。参数可以替换，默认值不会藏在 Prompt 或 WebUI 中。
 
 ## 5. WebUI 交互重点
 

@@ -13,6 +13,12 @@ uv sync --extra dev --extra webui
 
 项目跟踪 `uv.lock`，因此团队成员使用相同 Python 平台时会得到同一套已解析依赖。
 
+若要使用真实 `TradingAgents + RAG` 模式，还需安装 B 的本地向量记忆依赖：
+
+```powershell
+uv sync --extra dev --extra webui --extra memory
+```
+
 ## 2. 启动 WebUI
 
 ```powershell
@@ -22,7 +28,13 @@ uv run --frozen streamlit run webui/app.py
 默认地址通常是 <http://localhost:8501>。主题配置位于
 `.streamlit/config.toml`。
 
-第一次体验不需要配置 API Key：
+页面有两种决策引擎：
+
+- `Fast demo`：不需要 API Key，不访问 LLM，适合快速展示全部审计与执行能力；
+- `TradingAgents + RAG`：使用 `.env` 中配置的模型、C 的完整 Agent 图和 B 的
+  `EnhancedMemoryProvider`。
+
+第一次体验建议使用 `Fast demo`：
 
 1. 打开左侧 **Run Experiment**；
 2. 保持 `Built-in deterministic demo` 数据源；
@@ -50,8 +62,11 @@ uv run --frozen streamlit run webui/app.py
 
 ### Run Experiment
 
+- 在 `Fast demo` 与 `TradingAgents + RAG` 间切换；
 - 配置标的、时间窗口、初始资金和决策间隔；
 - 显式配置手续费、最低费用和滑点；
+- 真实模式可选择参与图运行的分析师与单标的建仓上限；
+- 提交前估算完整 Agent 图调用次数，一周版本单次最多 12 次；
 - 实时查看 `RunEvent` 进度流水线；
 - 运行成功或失败都会写入 SQLite。
 
@@ -62,6 +77,8 @@ uv run --frozen streamlit run webui/app.py
 - 价格与 Agent 目标仓位联动图；
 - 点击交易标记定位决策；
 - 查看当时行情、记忆、理由、诊断、成交和账本；
+- 真实模式在 **Agent dossier** 中按阶段浏览分析师报告、研究计划、交易提案、
+  Portfolio Manager 决策及审计对象数量；
 - 下载完整运行 JSON；
 - 发起不调用 Agent 的执行层 What-if。
 
@@ -96,18 +113,39 @@ uv run --frozen streamlit run webui/app.py
 - `RunEvent`；
 - 失败原因。
 
-## 6. 接入 B 和 C 的真实实现
+## 6. B/C 真实集成
 
-WebUI 不导入 B、C 的内部模块。集成层只需要把满足协议的对象交给应用服务：
+默认图输出 `Buy / Overweight / Hold / Underweight / Sell` 五级评级，而 Broker
+只执行连续的 `target_weight`。职责一提供了两层显式适配：
+
+- `TradingAgentsGraphDecisionProvider`：运行默认图、严格读取 Portfolio Manager
+  评级并返回公共 `DecisionEnvelope`；
+- `RatingAllocationPolicy`：把评级转换为 long-only 目标仓位。
+
+代码入口如下：
 
 ```python
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.extensions.contracts import BacktestRequest
+from tradingagents.extensions.memory import EnhancedMemoryProvider
 from tradingagents.extensions.paper_trading import (
     BacktestApplicationService,
     HistoricalMarketDataProvider,
+    RatingAllocationPolicy,
     SQLiteRunStore,
+    TradingAgentsGraphDecisionProvider,
 )
+from tradingagents.graph.trading_graph import TradingAgentsGraph
 
+graph = TradingAgentsGraph(config=dict(DEFAULT_CONFIG))
+memory = EnhancedMemoryProvider(
+    dict(DEFAULT_CONFIG),
+    llm_client=graph.quick_thinking_llm,
+)
+decision = TradingAgentsGraphDecisionProvider(
+    graph,
+    RatingAllocationPolicy(max_position_weight=0.35),
+)
 request = BacktestRequest(...)
 market_data = HistoricalMarketDataProvider.from_yfinance(
     request.symbols, request.start, request.end
@@ -116,18 +154,37 @@ service = BacktestApplicationService(market_data, SQLiteRunStore())
 
 stored = service.run_and_store(
     request=request,
-    decision_provider=real_c_provider,
-    memory_provider=real_b_provider,
+    decision_provider=decision,
+    memory_provider=memory,
     label="B/C integration run",
 )
 ```
 
-真实对象分别实现：
+### 记忆生命周期为什么只由 A 管理
 
-- B：`MemoryProvider`；
-- C：`DecisionProvider`。
+回测器先通过公共 `MemoryProvider.retrieve()` 获取 `as_of <= T` 的记忆。适配器
+在本次图调用期间把这份上下文作为只读 Provider 注入各 Agent，并临时关闭图
+内部的 Markdown/RAG 写入。图结束后：
 
-演示页面当前使用 `DemoMemoryProvider` 和 `MovingAverageDecisionProvider`。后者只用于让 A 的引擎和 UI 独立可运行，不代表 C 的最终策略。
+1. A 执行评级映射后的目标仓位；
+2. A 用真实 `ExecutionReport` 调用 B 的 `record_decision()`；
+3. 结果窗口到达后，A 再调用 B 的 `record_outcome()`。
+
+因此同一决策只写入一次，历史回测也不会被默认图的“当前时间反思”路径污染。
+
+### 默认评级仓位政策
+
+默认单标的建仓上限为 35%，多标的还会使用 `min(35%, 1/N)`：
+
+| Portfolio Manager 评级 | 目标仓位规则 |
+|---|---|
+| Buy | 只增不减，向分散上限靠拢 |
+| Overweight | 只增不减，向上限的 75% 靠拢 |
+| Hold | 保持当前仓位 |
+| Underweight | 只减不增，降到不高于上限的 25% |
+| Sell | 清零 |
+
+显式评级缺失时不会默认解释为 `Hold`，而是返回 `FAILED_SAFE` 并保持当前仓位。
 
 ## 7. 时间与成交语义
 
@@ -189,4 +246,9 @@ uv run --frozen streamlit run webui/app.py --server.headless true
 - 不模拟盘口深度、停牌、涨跌停、融资和做空；
 - 复权行情不单独处理分红现金流；
 - Streamlit 适合本地演示与研究，不提供多用户任务隔离；
-- 接入真实 B/C Provider 后才代表完整三人项目策略。
+- 真实模式每个决策点都会运行完整多 Agent 图，不适合用很密的日频决策间隔；
+- 首次加载本地 embedding 可能需要下载模型；一次完整图调用通常以分钟计，而不是
+  演示策略的秒级执行。页面默认只选 Market Analyst、约 21 天窗口和 30 bars
+  间隔，以形成一次完整图调用；需要时再增加分析师或决策点；
+- Agent 图内部的数据工具仍有各自的历史可得性限制，Decision Lab 保存并展示其
+  降级状态与证据链，不把缺失数据伪装成精确回测输入。

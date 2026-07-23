@@ -469,5 +469,9 @@ from tradingagents.extensions.protocols import (
 - B 在 `memory/` 中提供满足 `MemoryProvider` 的对象；
 - C 在 `decision/tools/` 中维护 Market/Sentiment 等 **Analyst Tools**；
   `DecisionProvider` 协议仍保留供日后薄 Policy / Broker 接入，**当前默认图不再挂接 Hybrid 闸门**；
+- A 在 `paper_trading/integrations.py` 提供
+  `TradingAgentsGraphDecisionProvider`，把默认图的最终五级评级通过独立的
+  `RatingAllocationPolicy` 转成公共 `TradeIntent`；这层是集成政策，不属于
+  C 的内部决策实现；
 - WebUI 和集成代码只导入公共契约与协议，不导入 B、C 的内部类；
 - 公共层的契约测试位于 `tests/test_extension_contracts.py`。
