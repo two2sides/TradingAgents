@@ -59,11 +59,12 @@ def _price_df(prices):
     return pd.DataFrame({"Close": prices})
 
 
-def _make_pm_state(past_context=""):
+def _make_pm_state(past_context="", portfolio_context=""):
     """Minimal AgentState dict for portfolio_manager_node."""
     return {
         "company_of_interest": "NVDA",
         "past_context": past_context,
+        "portfolio_context": portfolio_context,
         "risk_debate_state": {
             "history": "Risk debate history.",
             "aggressive_history": "",
@@ -686,6 +687,7 @@ class TestPortfolioManagerInjection:
         propagator = Propagator()
         state = propagator.create_initial_state("NVDA", "2026-01-10")
         assert state["past_context"] == ""
+        assert state["portfolio_context"] == ""
 
     # PM prompt
 
@@ -706,6 +708,20 @@ class TestPortfolioManagerInjection:
         state = _make_pm_state(past_context="")
         pm_node(state)
         assert "Lessons from prior decisions" not in captured["prompt"]
+
+    def test_pm_prompt_includes_ground_truth_portfolio_context(self):
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm_node = create_portfolio_manager(llm)
+        state = _make_pm_state(
+            portfolio_context=("Current NVDA position: 0 shares, 0.00% weight\nHold: 17.50%")
+        )
+
+        pm_node(state)
+
+        assert "Actual account and executable allocation bands" in captured["prompt"]
+        assert "Current NVDA position: 0 shares, 0.00% weight" in captured["prompt"]
+        assert "Hold: 17.50%" in captured["prompt"]
 
     def test_pm_returns_rendered_markdown_with_rating(self):
         """The structured PortfolioDecision is rendered to markdown that

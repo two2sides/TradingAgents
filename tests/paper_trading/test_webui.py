@@ -39,6 +39,12 @@ def test_decision_lab_pages_and_builtin_run_render(monkeypatch, tmp_path):
     run_app.run(timeout=30)
     assert not run_app.exception
     assert any(widget.label == "Agent analysts" for widget in run_app.multiselect)
+    cadence = next(
+        widget
+        for widget in run_app.number_input
+        if widget.label == "Decision cadence · trading bars"
+    )
+    assert cadence.value == 1
     market_source = next(widget for widget in run_app.selectbox if widget.label == "Market source")
     assert "Yahoo Chart · cached" in market_source.options
 

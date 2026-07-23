@@ -85,7 +85,7 @@ def make_request(*, current_weight: float = 0.2) -> DecisionRequest:
     [
         ("Buy", 0.35),
         ("Overweight", 0.2625),
-        ("Hold", 0.2),
+        ("Hold", 0.175),
         ("Underweight", 0.0875),
         ("Sell", 0.0),
     ],
@@ -101,14 +101,16 @@ def test_rating_policy_has_explicit_directional_bands(rating, expected):
     assert decision.diversification_cap == pytest.approx(0.35)
 
 
-def test_rating_policy_diversifies_entries_and_never_opens_on_underweight():
+def test_rating_policy_uses_absolute_bands_for_a_cash_account():
     policy = RatingAllocationPolicy(max_position_weight=0.8)
 
     buy = policy.resolve("Buy", current_weight=0, universe_size=4)
+    hold = policy.resolve("Hold", current_weight=0, universe_size=4)
     underweight = policy.resolve("Underweight", current_weight=0, universe_size=4)
 
     assert buy.target_weight == pytest.approx(0.25)
-    assert underweight.target_weight == 0
+    assert hold.target_weight == pytest.approx(0.125)
+    assert underweight.target_weight == pytest.approx(0.0625)
 
 
 def test_graph_adapter_injects_request_memory_and_restores_graph_state():
@@ -120,11 +122,19 @@ def test_graph_adapter_injects_request_memory_and_restores_graph_state():
             self.memory_provider = original_provider
             self.memory_log = original_log
             self.seen_context = None
+            self.seen_portfolio_context = None
 
-        def propagate(self, symbol, trade_date, asset_type="stock"):
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
             assert self.memory_provider is not original_provider
             assert self.memory_log is not original_log
             assert self.memory_log.get_pending_entries() == []
+            self.seen_portfolio_context = portfolio_context
             self.seen_context = self.memory_provider.retrieve(
                 MemoryQuery(
                     symbol=symbol,
@@ -162,13 +172,21 @@ def test_graph_adapter_injects_request_memory_and_restores_graph_state():
     assert result.intent.metadata["rating"] == "Buy"
     assert result.diagnostics["agent_reports"]["final_decision"].startswith("**Rating**")
     assert graph.seen_context.items[0].memory_id == "memory-1"
+    assert "Current AAPL position: 200 shares, 20.00% weight" in (graph.seen_portfolio_context)
+    assert "Hold: 17.50%" in graph.seen_portfolio_context
     assert graph.memory_provider is original_provider
     assert graph.memory_log is original_log
 
 
 def test_graph_adapter_fails_safe_when_rating_is_not_explicit():
     class AmbiguousGraph:
-        def propagate(self, symbol, trade_date, asset_type="stock"):
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
             return {"final_trade_decision": "The evidence is mixed."}, "Hold"
 
     result = TradingAgentsGraphDecisionProvider(AmbiguousGraph()).decide(make_request())
@@ -179,13 +197,45 @@ def test_graph_adapter_fails_safe_when_rating_is_not_explicit():
     assert "not explicit" in result.intent.warnings[0]
 
 
+def test_graph_adapter_turns_hold_into_a_neutral_entry_from_cash():
+    class HoldGraph:
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
+            assert "none (the account is all cash)" in portfolio_context
+            return (
+                {
+                    "final_trade_decision": (
+                        "**Rating**: Hold\n\n**Executive Summary**: Establish neutral exposure."
+                    )
+                },
+                "Hold",
+            )
+
+    result = TradingAgentsGraphDecisionProvider(HoldGraph()).decide(make_request(current_weight=0))
+
+    assert result.status == "SUCCESS"
+    assert result.intent.target_weight == pytest.approx(0.175)
+    assert result.intent.metadata["allocation"]["current_weight"] == 0
+
+
 def test_graph_adapter_fails_safe_and_restores_state_after_graph_error():
     original_provider = object()
 
     class BrokenGraph:
         memory_provider = original_provider
 
-        def propagate(self, symbol, trade_date, asset_type="stock"):
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
             raise RuntimeError("model unavailable")
 
     graph = BrokenGraph()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import Counter
 from datetime import date, datetime, time, timedelta, timezone
 
 import streamlit as st
@@ -104,6 +105,30 @@ def _as_day_end(value: date) -> datetime:
     return datetime.combine(value, time.max, tzinfo=timezone.utc)
 
 
+def _no_trade_explanation(result) -> str | None:
+    """Explain a zero-fill run instead of leaving a flat equity line ambiguous."""
+
+    if result.metrics.get("fill_count", 0) or not result.decisions:
+        return None
+    ratings = Counter(
+        str(item.intent.metadata.get("rating") or "unrated") for item in result.decisions
+    )
+    rating_text = "、".join(f"{name} × {count}" for name, count in ratings.items())
+    targets = [item.intent.target_weight for item in result.decisions]
+    execution_statuses = Counter(item.status for item in result.executions)
+    status_text = "、".join(f"{name} × {count}" for name, count in execution_statuses.items())
+    if all(target <= 1e-9 for target in targets):
+        reason = "所有决策都要求 0% 目标仓位，因此空仓账户没有产生买单"
+    elif execution_statuses.get("REJECTED"):
+        reason = "Agent 给出了非零目标仓位，但 Broker 拒绝了至少一次执行"
+    else:
+        reason = "目标仓位与整数股执行后的现有仓位一致，因此没有新增成交"
+    return (
+        f"{reason}。决策评级：{rating_text or '无'}；"
+        f"执行状态：{status_text or '无'}。可在 Decision Replay 查看逐日目标与原因。"
+    )
+
+
 def render() -> None:
     render_hero(
         "EXPERIMENT CONTROL",
@@ -174,11 +199,16 @@ def render() -> None:
             )
         with middle[1]:
             decision_interval = st.number_input(
-                "Decision interval · bars",
+                "Decision cadence · trading bars",
                 min_value=1,
                 max_value=60,
-                value=30 if real_mode else 5,
+                value=1,
                 key=f"decision-interval-{engine}",
+                help=(
+                    "1 表示每个交易日收盘决策、下一交易日开盘执行。"
+                    "大于 1 只适用于明确的低频策略；真实 Agent 模式每个决策日"
+                    "都会运行一次完整多 Agent 图。"
+                ),
             )
         with middle[2]:
             lookback = st.number_input(
@@ -233,7 +263,11 @@ def render() -> None:
                     max_value=100.0,
                     value=35.0,
                     step=5.0,
-                    help="Buy 的单标的建仓上限；多标的时还会应用 1/N 分散上限。",
+                    help=(
+                        "五档评级的绝对仓位基准：Buy=100%、Overweight=75%、"
+                        "Hold=50%、Underweight=25%、Sell=0%；多标的还会应用 "
+                        "1/N 分散上限。"
+                    ),
                 )
 
         label = st.text_input("Run label", value="Decision Lab experiment")
@@ -250,8 +284,9 @@ def render() -> None:
         )
         if real_mode:
             st.caption(
-                "建议首次使用 1 个标的、约 21–30 天窗口、30 bars 决策间隔；"
-                "完整 Agent 图远慢于演示策略。"
+                "默认按每个交易日决策。真实模式每天都会运行完整多 Agent 图，"
+                "因此长窗口可能需要较长时间并产生较多模型请求；若主动改成低频，"
+                "页面会把它视为策略设定，而不是普通日频回测。"
             )
         return
 
@@ -274,12 +309,15 @@ def render() -> None:
 
     estimated_bars = max(1, math.ceil((end_at - start_at).days * 5 / 7))
     estimated_agent_calls = math.ceil(estimated_bars / int(decision_interval)) * len(symbols)
-    if real_mode and estimated_agent_calls > 12:
-        st.error(
-            f"当前配置预计需要约 {estimated_agent_calls} 次完整 Agent 图调用。"
-            "一周版单次实验上限为 12 次；请缩短窗口、增加决策间隔或减少标的。"
+    if real_mode:
+        logger.info(
+            "Agent replay requested symbols=%s estimated_bars=%d "
+            "decision_interval=%d estimated_graph_calls=%d",
+            ",".join(symbols),
+            estimated_bars,
+            int(decision_interval),
+            estimated_agent_calls,
         )
-        return
 
     analyst_ids = tuple(ANALYST_OPTIONS[label] for label in selected_analyst_labels)
     request = BacktestRequest(
@@ -404,6 +442,11 @@ def render() -> None:
                 "value": format_percent(result.metrics.get("max_drawdown")),
                 "tone": "negative",
             },
+            {
+                "label": "Decisions",
+                "value": len(result.decisions),
+                "tone": "neutral",
+            },
             {"label": "Trades", "value": int(result.metrics.get("fill_count", 0)), "tone": "amber"},
             {
                 "label": "Fees",
@@ -412,6 +455,9 @@ def render() -> None:
             },
         ]
     )
+    no_trade_reason = _no_trade_explanation(result)
+    if no_trade_reason:
+        st.warning(no_trade_reason, icon=":material/info:")
     st.info("结果已设为当前运行。请从左侧进入 Decision Replay 查看交易点和完整证据链。")
 
 

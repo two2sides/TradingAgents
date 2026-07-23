@@ -269,6 +269,18 @@ class HistoricalBacktestRunner:
                     "universe_symbols": list(request.symbols),
                 },
             )
+            self._emit(
+                observer,
+                timestamp,
+                "DECISION_STARTED",
+                f"Running decision provider for {symbol}",
+                None,
+                {
+                    "symbol": symbol,
+                    "current_weight": portfolio.weight_for(symbol),
+                    "memory_items": len(memory.items),
+                },
+            )
             envelope = self._decide_safely(
                 request=decision_request,
                 provider=decision_provider,
@@ -304,6 +316,8 @@ class HistoricalBacktestRunner:
                     "symbol": symbol,
                     "decision_id": envelope.intent.decision_id,
                     "status": envelope.status,
+                    "rating": envelope.intent.metadata.get("rating"),
+                    "current_weight": portfolio.weight_for(symbol),
                     "target_weight": envelope.intent.target_weight,
                 },
             )
@@ -418,7 +432,11 @@ class HistoricalBacktestRunner:
                 "symbol": intent.symbol,
                 "decision_id": intent.decision_id,
                 "status": report.status,
+                "target_weight": report.requested_target_weight,
+                "achieved_weight": report.achieved_weight,
+                "fill_count": len(report.fills),
                 "fees": report.fees,
+                "rejection_reason": report.rejection_reason,
             },
         )
         return report

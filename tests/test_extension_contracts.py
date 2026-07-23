@@ -196,7 +196,7 @@ def test_backtest_request_has_explicit_execution_assumptions():
 
     assert request.execution.commission_rate == pytest.approx(0.001)
     assert request.execution.execution_policy == "NEXT_OPEN"
-    assert request.decision_interval_bars == 5
+    assert request.decision_interval_bars == 1
     assert request.outcome_horizon_bars == 5
 
     with pytest.raises(ValidationError):

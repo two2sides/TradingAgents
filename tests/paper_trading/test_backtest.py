@@ -72,6 +72,7 @@ def test_backtest_builds_auditable_result_and_time_safe_contexts():
     assert observer.events[0].stage == "PREPARING"
     assert observer.events[-1].stage == "COMPLETED"
     assert observer.events[-1].progress == 1
+    assert any(event.stage == "DECISION_STARTED" for event in observer.events)
 
     for decision in result.decisions:
         context = result.metadata["decision_contexts"][decision.intent.decision_id]

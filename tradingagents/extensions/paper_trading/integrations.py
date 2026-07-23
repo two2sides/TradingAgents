@@ -44,29 +44,30 @@ class AllocationDecision:
 
 @dataclass(frozen=True, slots=True)
 class RatingAllocationPolicy:
-    """Convert C's five-tier rating into a long-only target weight.
+    """Convert C's five-tier conviction rating into an absolute target weight.
 
-    ``max_position_weight`` is an increase/entry cap, not a forced risk
-    liquidation threshold.  A bullish rating therefore never sells an
-    existing position merely because appreciation moved it above the cap.
-    Bearish ratings never open a new position.
+    Every non-``Sell`` rating maps to an explicit exposure band.  This keeps a
+    cash-started backtest actionable: ``Hold`` means neutral exposure and
+    ``Underweight`` means small exposure instead of silently preserving zero.
     """
 
     max_position_weight: float = 0.35
     overweight_fraction: float = 0.75
+    hold_fraction: float = 0.50
     underweight_fraction: float = 0.25
-    version: str = "rating-allocation-v1"
+    version: str = "rating-allocation-v2-absolute"
 
     def __post_init__(self) -> None:
         for name, value in (
             ("max_position_weight", self.max_position_weight),
             ("overweight_fraction", self.overweight_fraction),
+            ("hold_fraction", self.hold_fraction),
             ("underweight_fraction", self.underweight_fraction),
         ):
             if not 0 <= value <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
-        if self.underweight_fraction >= self.overweight_fraction:
-            raise ValueError("underweight_fraction must be less than overweight_fraction")
+        if not (self.underweight_fraction < self.hold_fraction < self.overweight_fraction):
+            raise ValueError("allocation fractions must satisfy underweight < hold < overweight")
 
     def resolve(
         self,
@@ -75,7 +76,7 @@ class RatingAllocationPolicy:
         current_weight: float,
         universe_size: int = 1,
     ) -> AllocationDecision:
-        """Return a directional, diversified target for one canonical rating."""
+        """Return an absolute, diversified target for one canonical rating."""
 
         if rating not in _RATINGS:
             raise ValueError(f"unsupported portfolio rating {rating!r}")
@@ -86,20 +87,26 @@ class RatingAllocationPolicy:
 
         diversification_cap = min(self.max_position_weight, 1 / universe_size)
         if rating == "Buy":
-            target = max(current_weight, diversification_cap)
-            rule = "increase toward the diversified position cap"
+            target = diversification_cap
+            rule = "rebalance to 100% of the diversified position cap"
         elif rating == "Overweight":
-            target = max(current_weight, diversification_cap * self.overweight_fraction)
-            rule = "increase toward the overweight allocation band"
+            target = diversification_cap * self.overweight_fraction
+            rule = f"rebalance to {self.overweight_fraction:.0%} of the diversified position cap"
         elif rating == "Hold":
-            target = current_weight
-            rule = "preserve the current position"
+            target = diversification_cap * self.hold_fraction
+            rule = (
+                f"rebalance to the neutral band "
+                f"({self.hold_fraction:.0%} of the diversified position cap)"
+            )
         elif rating == "Underweight":
-            target = min(current_weight, diversification_cap * self.underweight_fraction)
-            rule = "reduce toward the underweight allocation band"
+            target = diversification_cap * self.underweight_fraction
+            rule = (
+                f"rebalance to the defensive band "
+                f"({self.underweight_fraction:.0%} of the diversified position cap)"
+            )
         else:
             target = 0.0
-            rule = "exit the position"
+            rule = "rebalance to zero exposure"
 
         return AllocationDecision(
             rating=rating,
@@ -113,6 +120,54 @@ class RatingAllocationPolicy:
         """Return JSON-safe policy metadata for audits and the WebUI."""
 
         return asdict(self)
+
+
+def _format_portfolio_context(
+    request: DecisionRequest,
+    policy: RatingAllocationPolicy,
+    *,
+    universe_size: int,
+) -> str:
+    """Build the deterministic account and allocation contract seen by the graph."""
+
+    portfolio = request.portfolio
+    current_weight = portfolio.weight_for(request.symbol)
+    position = portfolio.positions.get(request.symbol)
+    positions = (
+        ", ".join(
+            f"{symbol}: {item.quantity} shares, {item.weight:.2%} weight"
+            for symbol, item in sorted(portfolio.positions.items())
+        )
+        or "none (the account is all cash)"
+    )
+    bands = {
+        rating: policy.resolve(
+            rating,
+            current_weight=current_weight,
+            universe_size=universe_size,
+        ).target_weight
+        for rating in RATINGS_5_TIER
+    }
+    quantity = position.quantity if position is not None else 0
+    return (
+        "Ground-truth portfolio at this decision time:\n"
+        f"- As of: {portfolio.as_of.isoformat()}\n"
+        f"- Total equity: {portfolio.total_equity:.2f}\n"
+        f"- Cash: {portfolio.cash:.2f}\n"
+        f"- Current {request.symbol} position: {quantity} shares, "
+        f"{current_weight:.2%} weight\n"
+        f"- All positions: {positions}\n"
+        f"- Tradable universe: {universe_size} symbol(s)\n"
+        "\n"
+        "Executable rating contract (absolute post-trade target weights):\n"
+        f"- Buy: {bands['Buy']:.2%}\n"
+        f"- Overweight: {bands['Overweight']:.2%}\n"
+        f"- Hold: {bands['Hold']:.2%}\n"
+        f"- Underweight: {bands['Underweight']:.2%}\n"
+        f"- Sell: {bands['Sell']:.2%}\n"
+        "Choose the rating for the desired post-trade exposure. Do not assume "
+        "that a position exists when the current weight is zero."
+    )
 
 
 class _RequestMemoryBridge:
@@ -209,12 +264,19 @@ class TradingAgentsGraphDecisionProvider:
         """Run the graph and translate its strict final rating into an intent."""
 
         current_weight = request.portfolio.weight_for(request.symbol)
+        universe_size = _positive_int(request.metadata.get("universe_size"), default=1)
+        portfolio_context = _format_portfolio_context(
+            request,
+            self.policy,
+            universe_size=universe_size,
+        )
         try:
             with self._lock, self._bind_request_context(request.memory):
                 final_state, graph_signal = self.graph.propagate(
                     request.symbol,
                     request.as_of.date().isoformat(),
                     asset_type=str(request.metadata.get("asset_type", "stock")),
+                    portfolio_context=portfolio_context,
                 )
         except Exception as exc:
             return self._failed_safe(
@@ -234,7 +296,6 @@ class TradingAgentsGraphDecisionProvider:
                 diagnostics=self._diagnostics(final_state, graph_signal, None, parsed.source),
             )
 
-        universe_size = _positive_int(request.metadata.get("universe_size"), default=1)
         allocation = self.policy.resolve(
             parsed.parsed,
             current_weight=current_weight,
@@ -267,6 +328,7 @@ class TradingAgentsGraphDecisionProvider:
                 "allocation_policy": self.policy.to_dict(),
                 "confidence_semantics": "deterministic rating-translation integrity",
                 "graph_run_id": final_state.get("run_id"),
+                "portfolio_context_version": "absolute-allocation-v1",
             },
         )
         return DecisionEnvelope(
