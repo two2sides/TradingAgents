@@ -20,6 +20,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "EventCollector": ("observers", "EventCollector"),
     "HistoricalBacktestRunner": ("backtest", "HistoricalBacktestRunner"),
     "HistoricalMarketDataProvider": ("market_data", "HistoricalMarketDataProvider"),
+    "InsufficientMarketBars": ("backtest", "InsufficientMarketBars"),
     "LedgerBroker": ("broker", "LedgerBroker"),
     "LedgerEntry": ("ledger", "LedgerEntry"),
     "LoggingRunObserver": ("observers", "LoggingRunObserver"),
@@ -37,6 +38,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "build_decision_replay": ("view_models", "build_decision_replay"),
     "generate_demo_market_data": ("demo", "generate_demo_market_data"),
     "run_execution_what_if": ("replay", "run_execution_what_if"),
+    "validate_backtest_calendar": ("backtest", "validate_backtest_calendar"),
 }
 
 __all__ = list(_EXPORTS)

@@ -13,9 +13,11 @@ from tradingagents.extensions.paper_trading import (
     BacktestApplicationService,
     DemoMemoryProvider,
     HistoricalMarketDataProvider,
+    InsufficientMarketBars,
     MarketDataRateLimited,
     MovingAverageDecisionProvider,
     generate_demo_market_data,
+    validate_backtest_calendar,
 )
 from webui.components.progress import StreamlitProgressObserver
 from webui.components.style import (
@@ -45,6 +47,17 @@ def _run_error_details(exc: Exception, *, real_mode: bool) -> tuple[str, str | N
     """Return a precise user-facing error and an optional next action."""
 
     message = str(exc).strip() or type(exc).__name__
+    if isinstance(exc, InsufficientMarketBars):
+        available = (
+            "、".join(timestamp.date().isoformat() for timestamp in exc.available_bars)
+            if exc.available_bars
+            else "无"
+        )
+        return (
+            f"回测区间内共同交易日不足：找到 {len(exc.available_bars)} 个（{available}）。",
+            "NEXT_OPEN 执行至少需要两个共同交易日。请把结束日期延后，"
+            "并注意周末和休市日不产生 K 线。",
+        )
     if isinstance(exc, MarketDataRateLimited):
         return (
             f"行情服务限流：{message}",
@@ -147,7 +160,12 @@ def render() -> None:
         with top[1]:
             start_date = st.date_input("Start", value=default_start, max_value=today)
         with top[2]:
-            end_date = st.date_input("End", value=today, max_value=today)
+            end_date = st.date_input(
+                "End",
+                value=today,
+                max_value=today,
+                help="NEXT_OPEN 至少需要两个共同交易日；周末和休市日不计入。",
+            )
 
         middle = st.columns(4)
         with middle[0]:
@@ -297,6 +315,14 @@ def render() -> None:
                     fetch_start.isoformat(),
                     end_at.isoformat(),
                 )
+        calendar = validate_backtest_calendar(provider, request)
+        logger.info(
+            "Market window ready symbols=%s shared_bars=%d first=%s last=%s",
+            ",".join(symbols),
+            len(calendar),
+            calendar[0].date().isoformat(),
+            calendar[-1].date().isoformat(),
+        )
         service = BacktestApplicationService(provider, get_run_store())
         if real_mode:
             with st.status(
@@ -335,11 +361,19 @@ def render() -> None:
             observer=progress,
         )
     except Exception as exc:
-        logger.exception(
-            "Historical experiment failed engine=%s symbols=%s source=%s",
+        log_context = (
+            "Historical experiment rejected"
+            if isinstance(exc, InsufficientMarketBars)
+            else "Historical experiment failed"
+        )
+        log_method = logger.warning if isinstance(exc, InsufficientMarketBars) else logger.exception
+        log_method(
+            "%s engine=%s symbols=%s source=%s error=%s",
+            log_context,
             "tradingagents_rag" if real_mode else "deterministic_demo",
             ",".join(symbols),
             source,
+            exc,
         )
         message, action = _run_error_details(exc, real_mode=real_mode)
         st.error(message)

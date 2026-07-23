@@ -11,6 +11,7 @@ from tradingagents.extensions.contracts import BacktestRequest
 from tradingagents.extensions.paper_trading import (
     DemoMemoryProvider,
     HistoricalBacktestRunner,
+    InsufficientMarketBars,
     MarketDataRateLimited,
     MovingAverageDecisionProvider,
     SQLiteRunStore,
@@ -96,6 +97,17 @@ def test_replay_charts_accept_a_complete_backtest_result():
 
 
 def test_run_page_classifies_dependency_and_rate_limit_errors():
+    market_window_error = InsufficientMarketBars(
+        ["AAPL"],
+        datetime(2026, 7, 3, tzinfo=timezone.utc),
+        datetime(2026, 7, 5, tzinfo=timezone.utc),
+        [],
+    )
+    message, action = _run_error_details(market_window_error, real_mode=True)
+    assert "找到 0 个" in message
+    assert "（无）" in message
+    assert "NEXT_OPEN" in action
+
     message, action = _run_error_details(
         ModuleNotFoundError("No module named 'torchvision'", name="torchvision"),
         real_mode=True,

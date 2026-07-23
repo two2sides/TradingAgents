@@ -35,6 +35,50 @@ from .metrics import build_buy_and_hold_curves, calculate_metrics
 logger = logging.getLogger(__name__)
 
 
+class InsufficientMarketBars(ValueError):
+    """Raised when NEXT_OPEN replay has fewer than two common market bars."""
+
+    def __init__(
+        self,
+        symbols: list[str],
+        start: datetime,
+        end: datetime,
+        available_bars: list[datetime],
+    ) -> None:
+        self.symbols = tuple(symbols)
+        self.start = start
+        self.end = end
+        self.available_bars = tuple(available_bars)
+        available = (
+            ", ".join(timestamp.date().isoformat() for timestamp in available_bars)
+            if available_bars
+            else "none"
+        )
+        super().__init__(
+            "NEXT_OPEN backtest needs at least two common market bars; "
+            f"found {len(available_bars)} for {', '.join(symbols)} between "
+            f"{start.date().isoformat()} and {end.date().isoformat()} "
+            f"(available: {available})"
+        )
+
+
+def validate_backtest_calendar(
+    market_data: HistoricalMarketDataProvider,
+    request: BacktestRequest,
+) -> list[datetime]:
+    """Return the synchronized replay calendar or a detailed validation error."""
+
+    calendar = market_data.common_calendar(request.symbols, request.start, request.end)
+    if len(calendar) < 2:
+        raise InsufficientMarketBars(
+            request.symbols,
+            request.start,
+            request.end,
+            calendar,
+        )
+    return calendar
+
+
 @dataclass(slots=True)
 class _PendingOutcome:
     due_index: int
@@ -66,9 +110,7 @@ class HistoricalBacktestRunner:
         memory_provider: MemoryProvider,
         observer: RunObserver | None = None,
     ) -> BacktestResult:
-        calendar = self.market_data.common_calendar(request.symbols, request.start, request.end)
-        if len(calendar) < 2:
-            raise ValueError("backtest needs at least two common market bars")
+        calendar = validate_backtest_calendar(self.market_data, request)
 
         broker = LedgerBroker(
             initial_cash=request.initial_cash,
@@ -484,4 +526,8 @@ class HistoricalBacktestRunner:
             return
 
 
-__all__ = ["HistoricalBacktestRunner"]
+__all__ = [
+    "HistoricalBacktestRunner",
+    "InsufficientMarketBars",
+    "validate_backtest_calendar",
+]

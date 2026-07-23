@@ -10,7 +10,9 @@ from tradingagents.extensions.paper_trading import (
     EventCollector,
     HistoricalBacktestRunner,
     HistoricalMarketDataProvider,
+    InsufficientMarketBars,
     MovingAverageDecisionProvider,
+    validate_backtest_calendar,
 )
 from tradingagents.extensions.paper_trading.metrics import calculate_metrics
 
@@ -94,6 +96,18 @@ def test_backtest_is_deterministic_for_fixed_providers():
     )
 
     assert first == second
+
+
+def test_backtest_calendar_reports_actual_bars_for_too_short_window():
+    request = make_request().model_copy(update={"end": START})
+
+    with pytest.raises(InsufficientMarketBars) as caught:
+        validate_backtest_calendar(make_provider(), request)
+
+    assert caught.value.symbols == ("AAPL",)
+    assert caught.value.available_bars == (START,)
+    assert "found 1" in str(caught.value)
+    assert START.date().isoformat() in str(caught.value)
 
 
 def test_decision_provider_failure_preserves_position_and_run_continues():
