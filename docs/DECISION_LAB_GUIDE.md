@@ -34,13 +34,15 @@ uv run --frozen streamlit run webui/app.py
 - `TradingAgents + RAG`：使用 `.env` 中配置的模型、C 的完整 Agent 图和 B 的
   `EnhancedMemoryProvider`。
 
-真实模式的 Market source 还提供 `Built-in execution sandbox`。它用于 Yahoo
-限流时继续验证 Agent、RAG、Broker 和 WebUI，不使用真实执行价格，因此不能把其
-收益指标解释为真实历史回测。
+真实行情默认使用 `Yahoo Chart · cached`：它复用项目统一的 Chart JSON
+数据路径和磁盘缓存，不经过 yfinance 的 crumb/cookie 流程，也不需要行情 Key。
+真实模式还提供 `Built-in execution sandbox`，用于外部服务不可用时继续验证
+Agent、RAG、Broker 和 WebUI。Sandbox 不使用真实执行价格，因此不能把其收益指标
+解释为真实历史回测。
 
 若升级前的环境出现 `No module named 'torchvision'`，重新同步 memory extra
-并重启 Streamlit。若 yfinance 持续返回 HTTP 429，页面会在短暂重试后明确提示
-限流；可以稍后重试，或临时选择 execution sandbox。
+并重启 Streamlit。若 Yahoo Chart 持续返回 HTTP 429，页面会在指数退避重试后
+明确提示限流；可以稍后重试，或临时选择 execution sandbox。
 
 第一次体验建议使用 `Fast demo`：
 
@@ -54,11 +56,21 @@ uv run --frozen streamlit run webui/app.py
 
 内置演示行情是确定性生成的，同样的标的和时间窗口每次产生相同 OHLCV 数据，适合自动测试和现场演示。它不是实际市场数据。
 
-## 3. 使用 yfinance
+## 3. 使用 Yahoo Chart
 
-在运行表单中把 Market source 切换为 `yfinance daily`。该适配器下载复权后的日线并一次性加载到不可变的内存数据源；回测循环不会在每个决策日重复发起网络请求。
+在运行表单中把 Market source 切换为 `Yahoo Chart · cached`。该适配器先查询
+共享磁盘缓存，只在需要时访问 Yahoo Chart JSON，再把请求窗口内的日线一次性
+加载到不可变的内存数据源；回测循环不会在每个决策日重复发起网络请求。
 
-当前版本使用复权 OHLCV 规避拆股产生的虚假价格跳变，但不单独模拟现金分红和拆股后的持股数量变化。
+`HistoricalMarketDataProvider.from_yfinance()` 仍作为兼容接口保留，但不再是
+WebUI 默认路径。当前 Yahoo Chart 回放不单独模拟现金分红和拆股后的持股数量变化。
+
+终端默认输出 INFO 级别的初始化、行情、决策、成交、完成、限流和异常日志。
+需要逐日估值细节时可以在启动前设置：
+
+```powershell
+$env:TRADINGAGENTS_LOG_LEVEL = "DEBUG"
+```
 
 ## 4. 四个页面
 
@@ -155,7 +167,7 @@ decision = TradingAgentsGraphDecisionProvider(
     RatingAllocationPolicy(max_position_weight=0.35),
 )
 request = BacktestRequest(...)
-market_data = HistoricalMarketDataProvider.from_yfinance(
+market_data = HistoricalMarketDataProvider.from_yahoo_chart(
     request.symbols, request.start, request.end
 )
 service = BacktestApplicationService(market_data, SQLiteRunStore())

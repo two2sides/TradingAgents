@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+from time import monotonic
+
 from tradingagents.extensions.contracts import BacktestRequest, ExecutionConfig
 from tradingagents.extensions.protocols import DecisionProvider, MemoryProvider, RunObserver
 
 from .backtest import HistoricalBacktestRunner
 from .market_data import HistoricalMarketDataProvider
-from .observers import CompositeRunObserver, EventCollector
+from .observers import CompositeRunObserver, EventCollector, LoggingRunObserver
 from .replay import run_execution_what_if
 from .storage import RunStoreObserver, SQLiteRunStore, StoredRun
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestApplicationService:
@@ -35,10 +40,20 @@ class BacktestApplicationService:
         if self.market_data is None:
             raise ValueError("market_data is required for a full backtest")
         run_id = self.store.create_run(request, label=label)
-        store_observer = RunStoreObserver(self.store, run_id)
-        combined: RunObserver = (
-            CompositeRunObserver([store_observer, observer]) if observer else store_observer
+        started_at = monotonic()
+        logger.info(
+            "Backtest started run_id=%s symbols=%s start=%s end=%s source=%s",
+            run_id,
+            ",".join(request.symbols),
+            request.start.isoformat(),
+            request.end.isoformat(),
+            self.market_data.source,
         )
+        store_observer = RunStoreObserver(self.store, run_id)
+        observers: list[RunObserver] = [store_observer, LoggingRunObserver(run_id)]
+        if observer is not None:
+            observers.append(observer)
+        combined: RunObserver = CompositeRunObserver(observers)
         try:
             result = HistoricalBacktestRunner(self.market_data).run(
                 request,
@@ -49,7 +64,15 @@ class BacktestApplicationService:
             self.store.complete_run(run_id, result)
         except Exception as exc:
             self.store.fail_run(run_id, str(exc))
+            logger.error("Backtest failed run_id=%s error=%s", run_id, exc)
             raise
+        logger.info(
+            "Backtest completed run_id=%s decisions=%d executions=%d duration_ms=%.0f",
+            run_id,
+            len(result.decisions),
+            len(result.executions),
+            (monotonic() - started_at) * 1000,
+        )
         return self.store.get_run(run_id)
 
     def run_what_if_and_store(
@@ -65,9 +88,11 @@ class BacktestApplicationService:
         if parent.result is None:
             raise ValueError("parent run has no completed result")
         collector = EventCollector()
-        combined: RunObserver = (
-            CompositeRunObserver([collector, observer]) if observer else collector
-        )
+        logger.info("Execution what-if started parent_run_id=%s", parent_run_id)
+        observers: list[RunObserver] = [collector, LoggingRunObserver(parent_run_id)]
+        if observer is not None:
+            observers.append(observer)
+        combined: RunObserver = CompositeRunObserver(observers)
         request, result = run_execution_what_if(
             parent.request,
             parent.result,
@@ -81,6 +106,11 @@ class BacktestApplicationService:
             result,
             events=collector.events,
             label=label or f"What-if · {parent.label}",
+        )
+        logger.info(
+            "Execution what-if completed run_id=%s parent_run_id=%s",
+            run_id,
+            parent_run_id,
         )
         return self.store.get_run(run_id)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -30,6 +31,8 @@ from tradingagents.extensions.protocols import DecisionProvider, MemoryProvider,
 from .broker import LedgerBroker
 from .market_data import HistoricalMarketDataProvider, MarketDataUnavailable, as_utc
 from .metrics import build_buy_and_hold_curves, calculate_metrics
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -452,6 +455,7 @@ class HistoricalBacktestRunner:
     def _warn(warnings: list[str], message: str) -> None:
         if message not in warnings:
             warnings.append(message)
+            logger.warning(message)
 
     @staticmethod
     def _emit(
@@ -476,6 +480,7 @@ class HistoricalBacktestRunner:
             )
         except Exception:
             # A display or logging callback must never invalidate a backtest.
+            logger.exception("Run observer failed stage=%s message=%s", stage, message)
             return
 
 

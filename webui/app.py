@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import logging
+from time import monotonic
+
 import streamlit as st
 from dotenv import load_dotenv
 
+from webui.logging_config import configure_terminal_logging
+
 load_dotenv()
+configure_terminal_logging()
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    started_at = monotonic()
+    logger.debug("Streamlit script rerun started")
     st.set_page_config(
         page_title="TradingAgents · Decision Lab",
         page_icon=":material/finance_mode:",
@@ -69,6 +78,9 @@ def main() -> None:
     with st.sidebar:
         st.caption("LOCAL-FIRST · SQLITE ARCHIVE")
         st.caption("Execution policy · NEXT_OPEN")
+    logger.debug(
+        "Streamlit script rerun rendered duration_ms=%.0f", (monotonic() - started_at) * 1000
+    )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 """Streamlit shell and Plotly view smoke tests."""
 
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,6 +38,8 @@ def test_decision_lab_pages_and_builtin_run_render(monkeypatch, tmp_path):
     run_app.run(timeout=30)
     assert not run_app.exception
     assert any(widget.label == "Agent analysts" for widget in run_app.multiselect)
+    market_source = next(widget for widget in run_app.selectbox if widget.label == "Market source")
+    assert "Yahoo Chart · cached" in market_source.options
 
     engine = next(
         control for control in run_app.segmented_control if control.label == "Decision engine"
@@ -105,3 +109,28 @@ def test_run_page_classifies_dependency_and_rate_limit_errors():
     )
     assert "行情服务限流" in message
     assert "Built-in execution sandbox" in action
+
+
+def test_overview_import_does_not_eagerly_load_agent_or_model_stack():
+    script = """
+import sys
+import webui.pages.home
+
+unexpected = [
+    name
+    for name in ("tradingagents.agents", "transformers", "torch")
+    if name in sys.modules
+]
+if unexpected:
+    raise SystemExit("eager imports: " + ", ".join(unexpected))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout

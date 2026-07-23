@@ -92,7 +92,7 @@ webui/
 ### M2：历史回放与评价
 
 - [x] 提供离线 DataFrame/MarketBar 数据源。
-- [x] 提供 yfinance 历史数据适配器并缓存一次下载结果。
+- [x] 提供 Yahoo Chart 共享磁盘缓存适配器；保留 yfinance 兼容入口。
 - [x] 按决策时钟依次调用 B、C 和 Broker。
 - [x] 生成账户曲线、持仓历史、成交和警告。
 - [x] 计算 Buy & Hold 基准、收益、回撤、Sharpe、换手率和费用侵蚀。

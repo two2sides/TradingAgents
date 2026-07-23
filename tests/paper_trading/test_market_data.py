@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
+from tradingagents.dataflows.errors import VendorRateLimitError
 from tradingagents.extensions.contracts import MarketBar
 from tradingagents.extensions.paper_trading.demo import generate_demo_market_data
 from tradingagents.extensions.paper_trading.market_data import (
@@ -154,3 +155,40 @@ def test_yfinance_reports_persistent_rate_limit(monkeypatch):
             max_attempts=2,
             retry_delay=0,
         )
+
+
+def test_yahoo_chart_uses_shared_cache_path_and_retries_rate_limit(monkeypatch):
+    calls = []
+    frame = pd.DataFrame(
+        {
+            "Date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+            "Open": [100.0, 101.0],
+            "High": [102.0, 103.0],
+            "Low": [99.0, 100.0],
+            "Close": [101.0, 102.0],
+            "Volume": [1_000, 1_100],
+        }
+    )
+
+    def fake_load_ohlcv(symbol, end_date):
+        calls.append((symbol, end_date))
+        if len(calls) == 1:
+            raise VendorRateLimitError("temporary chart throttle")
+        return frame
+
+    monkeypatch.setattr(
+        "tradingagents.dataflows.stockstats_utils.load_ohlcv",
+        fake_load_ohlcv,
+    )
+
+    window_start = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    provider = HistoricalMarketDataProvider.from_yahoo_chart(
+        ["AAPL"],
+        window_start,
+        window_start + timedelta(days=2),
+        retry_delay=0,
+    )
+
+    assert len(calls) == 2
+    assert provider.source == "yahoo-chart-cached"
+    assert len(provider.get_snapshot("AAPL", window_start + timedelta(days=2), 10).bars) == 2

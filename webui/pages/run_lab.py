@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import date, datetime, time, timedelta, timezone
 
@@ -27,6 +28,8 @@ from webui.components.style import (
     render_section,
 )
 from webui.state import get_agent_runtime, get_run_store, select_run
+
+logger = logging.getLogger(__name__)
 
 DEMO_MODE = "Fast demo"
 AGENT_MODE = "TradingAgents + RAG"
@@ -67,13 +70,13 @@ def _run_error_details(exc: Exception, *, real_mode: bool) -> tuple[str, str | N
     return f"回测未完成：{message}", None
 
 
-@st.cache_resource(show_spinner=False)
-def _load_yfinance(
+@st.cache_resource(show_spinner=False, ttl="6h", max_entries=32)
+def _load_yahoo_chart(
     symbols: tuple[str, ...],
     start_iso: str,
     end_iso: str,
 ) -> HistoricalMarketDataProvider:
-    return HistoricalMarketDataProvider.from_yfinance(
+    return HistoricalMarketDataProvider.from_yahoo_chart(
         symbols,
         datetime.fromisoformat(start_iso),
         datetime.fromisoformat(end_iso),
@@ -182,14 +185,15 @@ def render() -> None:
         with costs[3]:
             source = st.selectbox(
                 "Market source",
-                ["yfinance daily", "Built-in execution sandbox"]
+                ["Yahoo Chart · cached", "Built-in execution sandbox"]
                 if real_mode
-                else ["Built-in deterministic demo", "yfinance daily"],
+                else ["Built-in deterministic demo", "Yahoo Chart · cached"],
                 help=(
-                    "Sandbox 使用确定性执行行情，适合在 Yahoo 限流时验证 Agent、"
+                    "Yahoo Chart 走项目统一的直连 JSON 与磁盘缓存，不使用行情 Key。"
+                    "Sandbox 使用确定性执行行情，适合在外部服务不可用时验证 Agent、"
                     "记忆和 Broker；它不代表真实历史价格。"
                     if real_mode
-                    else None
+                    else "Yahoo Chart 走项目统一的直连 JSON 与磁盘缓存，不使用行情 Key。"
                 ),
             )
 
@@ -287,8 +291,12 @@ def render() -> None:
         if source.startswith("Built-in"):
             provider = generate_demo_market_data(symbols, fetch_start, end_at)
         else:
-            with st.spinner("Downloading adjusted daily bars from yfinance…"):
-                provider = _load_yfinance(symbols, fetch_start.isoformat(), end_at.isoformat())
+            with st.spinner("Loading daily bars from Yahoo Chart and the shared cache…"):
+                provider = _load_yahoo_chart(
+                    symbols,
+                    fetch_start.isoformat(),
+                    end_at.isoformat(),
+                )
         service = BacktestApplicationService(provider, get_run_store())
         if real_mode:
             with st.status(
@@ -327,6 +335,12 @@ def render() -> None:
             observer=progress,
         )
     except Exception as exc:
+        logger.exception(
+            "Historical experiment failed engine=%s symbols=%s source=%s",
+            "tradingagents_rag" if real_mode else "deterministic_demo",
+            ",".join(symbols),
+            source,
+        )
         message, action = _run_error_details(exc, real_mode=real_mode)
         st.error(message)
         if action:

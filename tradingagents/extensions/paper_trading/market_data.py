@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
@@ -9,6 +10,8 @@ from time import sleep
 from typing import Any
 
 from tradingagents.extensions.contracts import ExecutionQuote, MarketBar, MarketSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 class MarketDataUnavailable(LookupError):
@@ -253,14 +256,15 @@ class HistoricalMarketDataProvider:
         end: datetime,
         *,
         max_attempts: int = 3,
-        retry_delay: float = 1.0,
+        retry_delay: float = 5.0,
     ) -> HistoricalMarketDataProvider:
         """Download adjusted daily OHLCV bars from yfinance.
 
         Adjusted bars avoid artificial jumps from splits in the one-week MVP.
         Corporate-action-aware share accounting remains outside the current
         scope and is documented in the implementation plan. Transient Yahoo
-        rate limits are retried with a short linear backoff.
+        rate limits are retried with exponential backoff. This compatibility
+        adapter remains available, but the WebUI defaults to Yahoo Chart.
         """
 
         import yfinance as yf
@@ -275,6 +279,14 @@ class HistoricalMarketDataProvider:
         for raw_symbol in symbols:
             symbol = normalize_symbol(raw_symbol)
             for attempt in range(1, max_attempts + 1):
+                logger.info(
+                    "Fetching yfinance bars symbol=%s start=%s end=%s attempt=%d/%d",
+                    symbol,
+                    start_at.date(),
+                    end_at.date(),
+                    attempt,
+                    max_attempts,
+                )
                 try:
                     frame = yf.Ticker(symbol).history(
                         start=start_at.date().isoformat(),
@@ -287,15 +299,129 @@ class HistoricalMarketDataProvider:
                     if not is_rate_limit_error(exc):
                         raise
                     if attempt == max_attempts:
+                        logger.error(
+                            "yfinance rate limit exhausted symbol=%s attempts=%d",
+                            symbol,
+                            max_attempts,
+                        )
                         raise MarketDataRateLimited(
                             f"yfinance remained rate limited for {symbol} "
                             f"after {max_attempts} attempts"
                         ) from exc
-                    sleep(retry_delay * attempt)
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    logger.warning(
+                        "yfinance rate limited symbol=%s retry_in=%.1fs attempt=%d/%d",
+                        symbol,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    sleep(delay)
             if frame.empty:
                 raise MarketDataUnavailable(f"yfinance returned no bars for {symbol}")
+            logger.info("Loaded yfinance bars symbol=%s rows=%d", symbol, len(frame))
             frames[symbol] = frame
         return cls.from_frames(frames, source="yfinance-adjusted")
+
+    @classmethod
+    def from_yahoo_chart(
+        cls,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+        *,
+        max_attempts: int = 3,
+        retry_delay: float = 5.0,
+    ) -> HistoricalMarketDataProvider:
+        """Load daily OHLCV through the project's cached Yahoo Chart path.
+
+        Unlike the yfinance compatibility adapter, this uses the direct Chart
+        JSON endpoint and the shared on-disk OHLCV cache. Only rows inside the
+        requested time window enter the immutable replay provider.
+        """
+
+        import pandas as pd
+
+        from tradingagents.dataflows.errors import (
+            NoMarketDataError,
+            VendorRateLimitError,
+        )
+        from tradingagents.dataflows.stockstats_utils import load_ohlcv
+
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_delay < 0:
+            raise ValueError("retry_delay must not be negative")
+
+        frames: dict[str, Any] = {}
+        start_at, end_at = as_utc(start), as_utc(end)
+        for raw_symbol in symbols:
+            symbol = normalize_symbol(raw_symbol)
+            frame = None
+            for attempt in range(1, max_attempts + 1):
+                logger.info(
+                    "Fetching Yahoo Chart bars symbol=%s start=%s end=%s attempt=%d/%d",
+                    symbol,
+                    start_at.date(),
+                    end_at.date(),
+                    attempt,
+                    max_attempts,
+                )
+                try:
+                    frame = load_ohlcv(symbol, end_at.date().isoformat())
+                    break
+                except VendorRateLimitError as exc:
+                    if attempt == max_attempts:
+                        logger.error(
+                            "Yahoo Chart rate limit exhausted symbol=%s attempts=%d",
+                            symbol,
+                            max_attempts,
+                        )
+                        raise MarketDataRateLimited(
+                            f"Yahoo Chart remained rate limited for {symbol} "
+                            f"after {max_attempts} attempts"
+                        ) from exc
+                    delay = retry_delay * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Yahoo Chart rate limited symbol=%s retry_in=%.1fs attempt=%d/%d",
+                        symbol,
+                        delay,
+                        attempt,
+                        max_attempts,
+                    )
+                    sleep(delay)
+                except NoMarketDataError as exc:
+                    logger.error("Yahoo Chart returned no data symbol=%s error=%s", symbol, exc)
+                    raise MarketDataUnavailable(str(exc)) from exc
+
+            if frame is None or frame.empty:
+                raise MarketDataUnavailable(f"Yahoo Chart returned no bars for {symbol}")
+            if "Date" not in frame.columns:
+                raise MarketDataUnavailable(
+                    f"Yahoo Chart data for {symbol} did not include a Date column"
+                )
+            normalized_frame = frame.copy()
+            normalized_frame.index = pd.to_datetime(
+                normalized_frame.pop("Date"),
+                errors="coerce",
+                utc=True,
+            )
+            normalized_frame = normalized_frame[
+                normalized_frame.index.notna()
+                & (normalized_frame.index >= start_at)
+                & (normalized_frame.index <= end_at)
+            ]
+            if normalized_frame.empty:
+                raise MarketDataUnavailable(
+                    f"Yahoo Chart returned no bars for {symbol} in the requested window"
+                )
+            logger.info(
+                "Loaded Yahoo Chart bars symbol=%s rows=%d source=shared-cache",
+                symbol,
+                len(normalized_frame),
+            )
+            frames[symbol] = normalized_frame
+        return cls.from_frames(frames, source="yahoo-chart-cached")
 
     def _require_symbol(self, symbol: str) -> tuple[MarketBar, ...]:
         try:

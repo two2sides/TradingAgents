@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pandas as pd
@@ -31,6 +32,8 @@ from webui.components.style import (
     render_metric_grid,
 )
 from webui.state import get_run_store, select_run, selected_run_id
+
+logger = logging.getLogger(__name__)
 
 
 def _tone(status: str) -> str:
@@ -261,49 +264,56 @@ def _render_decision_audit(result) -> None:
             "Agent trace",
             "Ledger evidence",
             "Diagnostics",
-        ]
+        ],
+        key=f"decision-evidence-{intent.decision_id}",
+        on_change="rerun",
     )
-    with memory_tab:
-        if item.memory is None:
-            st.caption("No saved memory context")
-        else:
-            st.caption(item.memory.summary or "Memory provider returned no summary.")
-            if item.memory.items:
-                for memory_item in item.memory.items:
-                    with st.container(border=True):
-                        st.markdown(
-                            f"`{memory_item.available_at:%Y-%m-%d}` · {memory_item.content}"
-                        )
+    if memory_tab.open:
+        with memory_tab:
+            if item.memory is None:
+                st.caption("No saved memory context")
             else:
-                st.caption("No time-safe prior outcomes were available at this point.")
-    with dossier_tab:
-        _render_agent_dossier(decision)
-    with trace_tab:
-        if decision.trace:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "Time": event.timestamp,
-                            "Source": event.source,
-                            "Type": event.event_type,
-                            "Summary": event.summary,
-                        }
-                        for event in decision.trace
-                    ]
-                ),
-                hide_index=True,
-                width="stretch",
-            )
-        else:
-            st.caption("Provider emitted no trace events.")
-    with ledger_tab:
-        if item.ledger_entries:
-            st.dataframe(pd.DataFrame(item.ledger_entries), hide_index=True, width="stretch")
-        else:
-            st.caption("This decision did not change the account ledger.")
-    with diagnostics_tab:
-        st.json(decision.diagnostics or {"message": "No diagnostics emitted."})
+                st.caption(item.memory.summary or "Memory provider returned no summary.")
+                if item.memory.items:
+                    for memory_item in item.memory.items:
+                        with st.container(border=True):
+                            st.markdown(
+                                f"`{memory_item.available_at:%Y-%m-%d}` · {memory_item.content}"
+                            )
+                else:
+                    st.caption("No time-safe prior outcomes were available at this point.")
+    if dossier_tab.open:
+        with dossier_tab:
+            _render_agent_dossier(decision)
+    if trace_tab.open:
+        with trace_tab:
+            if decision.trace:
+                st.dataframe(
+                    pd.DataFrame(
+                        [
+                            {
+                                "Time": event.timestamp,
+                                "Source": event.source,
+                                "Type": event.event_type,
+                                "Summary": event.summary,
+                            }
+                            for event in decision.trace
+                        ]
+                    ),
+                    hide_index=True,
+                    width="stretch",
+                )
+            else:
+                st.caption("Provider emitted no trace events.")
+    if ledger_tab.open:
+        with ledger_tab:
+            if item.ledger_entries:
+                st.dataframe(pd.DataFrame(item.ledger_entries), hide_index=True, width="stretch")
+            else:
+                st.caption("This decision did not change the account ledger.")
+    if diagnostics_tab.open:
+        with diagnostics_tab:
+            st.json(decision.diagnostics or {"message": "No diagnostics emitted."})
 
 
 def _render_agent_dossier(decision) -> None:
@@ -346,12 +356,16 @@ def _render_agent_dossier(decision) -> None:
         content = str(reports.get(key) or "").strip()
         if not content:
             continue
-        with st.expander(
+        report_expander = st.expander(
             label,
             expanded=key == "final_decision",
             icon=icon,
-        ):
-            st.markdown(content)
+            key=f"agent-report-{decision.intent.decision_id}-{key}",
+            on_change="rerun",
+        )
+        if report_expander.open:
+            with report_expander:
+                st.markdown(content)
 
 
 def _render_what_if(store, stored) -> None:
@@ -418,6 +432,7 @@ def _render_what_if(store, stored) -> None:
             observer=observer,
         )
     except Exception as exc:
+        logger.exception("Execution what-if failed parent_run_id=%s", stored.run_id)
         st.error(f"What-if 未完成：{exc}")
         return
     select_run(scenario.run_id)
@@ -575,23 +590,34 @@ def render() -> None:
             tone="amber",
         )
     if result.warnings:
-        with st.expander(
-            f"Data and runtime warnings · {len(result.warnings)}", icon=":material/warning:"
-        ):
-            for warning in result.warnings:
-                st.warning(warning)
+        warnings_expander = st.expander(
+            f"Data and runtime warnings · {len(result.warnings)}",
+            icon=":material/warning:",
+            key=f"run-warnings-{stored.run_id}",
+            on_change="rerun",
+        )
+        if warnings_expander.open:
+            with warnings_expander:
+                for warning in result.warnings:
+                    st.warning(warning)
 
     overview, decisions, what_if, timeline = st.tabs(
-        ["Portfolio timeline", "Decision audit", "Execution What-if", "Run events"]
+        ["Portfolio timeline", "Decision audit", "Execution What-if", "Run events"],
+        key="replay-workspace-tabs",
+        on_change="rerun",
     )
-    with overview:
-        _render_overview(result)
-    with decisions:
-        _render_decision_audit(result)
-    with what_if:
-        _render_what_if(store, stored)
-    with timeline:
-        _render_events(stored)
+    if overview.open:
+        with overview:
+            _render_overview(result)
+    if decisions.open:
+        with decisions:
+            _render_decision_audit(result)
+    if what_if.open:
+        with what_if:
+            _render_what_if(store, stored)
+    if timeline.open:
+        with timeline:
+            _render_events(stored)
 
 
 __all__ = ["render"]
