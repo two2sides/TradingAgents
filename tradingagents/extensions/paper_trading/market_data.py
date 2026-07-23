@@ -5,6 +5,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+from time import sleep
 from typing import Any
 
 from tradingagents.extensions.contracts import ExecutionQuote, MarketBar, MarketSnapshot
@@ -12,6 +13,24 @@ from tradingagents.extensions.contracts import ExecutionQuote, MarketBar, Market
 
 class MarketDataUnavailable(LookupError):
     """Raised when a requested historical observation does not exist."""
+
+
+class MarketDataRateLimited(MarketDataUnavailable):
+    """Raised after a historical data vendor remains rate limited after retries."""
+
+
+def is_rate_limit_error(exc: BaseException) -> bool:
+    """Recognize common HTTP/vendor rate-limit exception shapes."""
+
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    return (
+        "ratelimit" in name
+        or "rate limit" in message
+        or "rate limited" in message
+        or "too many requests" in message
+        or "http 429" in message
+    )
 
 
 def as_utc(value: datetime) -> datetime:
@@ -232,26 +251,47 @@ class HistoricalMarketDataProvider:
         symbols: Sequence[str],
         start: datetime,
         end: datetime,
+        *,
+        max_attempts: int = 3,
+        retry_delay: float = 1.0,
     ) -> HistoricalMarketDataProvider:
         """Download adjusted daily OHLCV bars from yfinance.
 
         Adjusted bars avoid artificial jumps from splits in the one-week MVP.
         Corporate-action-aware share accounting remains outside the current
-        scope and is documented in the implementation plan.
+        scope and is documented in the implementation plan. Transient Yahoo
+        rate limits are retried with a short linear backoff.
         """
 
         import yfinance as yf
+
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if retry_delay < 0:
+            raise ValueError("retry_delay must not be negative")
 
         frames: dict[str, Any] = {}
         start_at, end_at = as_utc(start), as_utc(end)
         for raw_symbol in symbols:
             symbol = normalize_symbol(raw_symbol)
-            frame = yf.Ticker(symbol).history(
-                start=start_at.date().isoformat(),
-                end=(end_at + timedelta(days=1)).date().isoformat(),
-                auto_adjust=True,
-                actions=False,
-            )
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    frame = yf.Ticker(symbol).history(
+                        start=start_at.date().isoformat(),
+                        end=(end_at + timedelta(days=1)).date().isoformat(),
+                        auto_adjust=True,
+                        actions=False,
+                    )
+                    break
+                except Exception as exc:
+                    if not is_rate_limit_error(exc):
+                        raise
+                    if attempt == max_attempts:
+                        raise MarketDataRateLimited(
+                            f"yfinance remained rate limited for {symbol} "
+                            f"after {max_attempts} attempts"
+                        ) from exc
+                    sleep(retry_delay * attempt)
             if frame.empty:
                 raise MarketDataUnavailable(f"yfinance returned no bars for {symbol}")
             frames[symbol] = frame
@@ -264,4 +304,10 @@ class HistoricalMarketDataProvider:
             raise MarketDataUnavailable(f"unknown market symbol {symbol}") from exc
 
 
-__all__ = ["HistoricalMarketDataProvider", "MarketDataUnavailable", "as_utc"]
+__all__ = [
+    "HistoricalMarketDataProvider",
+    "MarketDataRateLimited",
+    "MarketDataUnavailable",
+    "as_utc",
+    "is_rate_limit_error",
+]

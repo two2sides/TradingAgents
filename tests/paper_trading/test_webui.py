@@ -9,11 +9,13 @@ from tradingagents.extensions.contracts import BacktestRequest
 from tradingagents.extensions.paper_trading import (
     DemoMemoryProvider,
     HistoricalBacktestRunner,
+    MarketDataRateLimited,
     MovingAverageDecisionProvider,
     SQLiteRunStore,
     generate_demo_market_data,
 )
 from webui.components.charts import allocation_figure, drawdown_figure, equity_figure
+from webui.pages.run_lab import _run_error_details
 
 
 def test_decision_lab_pages_and_builtin_run_render(monkeypatch, tmp_path):
@@ -87,3 +89,19 @@ def test_replay_charts_accept_a_complete_backtest_result():
     assert any(trace.name in {"BUY", "SELL"} for trace in equity.data)
     assert allocation.data
     assert drawdown.data[0].fill == "tozeroy"
+
+
+def test_run_page_classifies_dependency_and_rate_limit_errors():
+    message, action = _run_error_details(
+        ModuleNotFoundError("No module named 'torchvision'", name="torchvision"),
+        real_mode=True,
+    )
+    assert "torchvision" in message
+    assert "uv sync" in action
+
+    message, action = _run_error_details(
+        MarketDataRateLimited("yfinance remained rate limited"),
+        real_mode=True,
+    )
+    assert "行情服务限流" in message
+    assert "Built-in execution sandbox" in action

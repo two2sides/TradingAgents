@@ -9,7 +9,11 @@ from .integrations import (
     TradingAgentsGraphDecisionProvider,
 )
 from .ledger import AccountLedger, LedgerEntry
-from .market_data import HistoricalMarketDataProvider, MarketDataUnavailable
+from .market_data import (
+    HistoricalMarketDataProvider,
+    MarketDataRateLimited,
+    MarketDataUnavailable,
+)
 from .observers import CompositeRunObserver, EventCollector
 from .replay import ReplayDecisionProvider, run_execution_what_if
 from .service import BacktestApplicationService
@@ -29,6 +33,7 @@ __all__ = [
     "LedgerBroker",
     "LedgerEntry",
     "MarketDataUnavailable",
+    "MarketDataRateLimited",
     "MovingAverageDecisionProvider",
     "RatingAllocationPolicy",
     "ReplayDecisionProvider",

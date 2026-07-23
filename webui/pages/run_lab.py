@@ -12,6 +12,7 @@ from tradingagents.extensions.paper_trading import (
     BacktestApplicationService,
     DemoMemoryProvider,
     HistoricalMarketDataProvider,
+    MarketDataRateLimited,
     MovingAverageDecisionProvider,
     generate_demo_market_data,
 )
@@ -35,6 +36,35 @@ ANALYST_OPTIONS = {
     "News": "news",
     "Fundamentals": "fundamentals",
 }
+
+
+def _run_error_details(exc: Exception, *, real_mode: bool) -> tuple[str, str | None]:
+    """Return a precise user-facing error and an optional next action."""
+
+    message = str(exc).strip() or type(exc).__name__
+    if isinstance(exc, MarketDataRateLimited):
+        return (
+            f"行情服务限流：{message}",
+            "稍后重试，或把 Market source 改为 Built-in execution sandbox。",
+        )
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        missing = getattr(exc, "name", None)
+        package = f" `{missing}`" if missing else ""
+        return (
+            f"运行依赖缺失{package}：{message}",
+            "执行 `uv sync --extra dev --extra webui --extra memory` 后重启 WebUI。",
+        )
+    if real_mode and (
+        "rate limit" in message.lower()
+        or "rate limited" in message.lower()
+        or "too many requests" in message.lower()
+        or "429" in message
+    ):
+        return (
+            f"模型或外部数据服务限流：{message}",
+            "等待服务配额恢复后重试；已经完成的运行档案不会受影响。",
+        )
+    return f"回测未完成：{message}", None
 
 
 @st.cache_resource(show_spinner=False)
@@ -152,9 +182,15 @@ def render() -> None:
         with costs[3]:
             source = st.selectbox(
                 "Market source",
-                ["yfinance daily"]
+                ["yfinance daily", "Built-in execution sandbox"]
                 if real_mode
                 else ["Built-in deterministic demo", "yfinance daily"],
+                help=(
+                    "Sandbox 使用确定性执行行情，适合在 Yahoo 限流时验证 Agent、"
+                    "记忆和 Broker；它不代表真实历史价格。"
+                    if real_mode
+                    else None
+                ),
             )
 
         selected_analyst_labels: list[str] = []
@@ -291,12 +327,10 @@ def render() -> None:
             observer=progress,
         )
     except Exception as exc:
-        hint = (
-            " 若缺少 RAG 依赖，请执行 `uv sync --extra dev --extra webui --extra memory`。"
-            if real_mode
-            else ""
-        )
-        st.error(f"回测未完成：{exc}.{hint}")
+        message, action = _run_error_details(exc, real_mode=real_mode)
+        st.error(message)
+        if action:
+            st.info(action, icon=":material/lightbulb:")
         return
 
     select_run(stored.run_id)

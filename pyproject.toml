@@ -54,6 +54,7 @@ bedrock = [
 memory = [
     "chromadb>=0.5",
     "sentence-transformers>=3.0",
+    "torchvision>=0.28,<0.29",
 ]
 
 [project.scripts]

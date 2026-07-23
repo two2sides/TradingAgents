@@ -9,6 +9,7 @@ from tradingagents.extensions.contracts import MarketBar
 from tradingagents.extensions.paper_trading.demo import generate_demo_market_data
 from tradingagents.extensions.paper_trading.market_data import (
     HistoricalMarketDataProvider,
+    MarketDataRateLimited,
     MarketDataUnavailable,
 )
 
@@ -96,3 +97,60 @@ def test_built_in_demo_data_is_deterministic_and_needs_no_network():
     )
     assert first.source == "built-in-demo"
     assert len(first.common_calendar(["AAPL", "MSFT"], START, end)) >= 10
+
+
+def test_yfinance_retries_transient_rate_limit(monkeypatch):
+    calls = []
+    frame = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0],
+            "High": [102.0, 103.0],
+            "Low": [99.0, 100.0],
+            "Close": [101.0, 102.0],
+            "Volume": [1_000, 1_100],
+        },
+        index=pd.to_datetime(["2024-01-02", "2024-01-03"], utc=True),
+    )
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            calls.append((self.symbol, kwargs))
+            if len(calls) < 3:
+                raise RuntimeError("Too Many Requests. Rate limited.")
+            return frame
+
+    monkeypatch.setattr("yfinance.Ticker", FakeTicker)
+
+    provider = HistoricalMarketDataProvider.from_yfinance(
+        ["AAPL"],
+        START,
+        START + timedelta(days=2),
+        max_attempts=3,
+        retry_delay=0,
+    )
+
+    assert len(calls) == 3
+    assert provider.source == "yfinance-adjusted"
+
+
+def test_yfinance_reports_persistent_rate_limit(monkeypatch):
+    class FakeTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+    monkeypatch.setattr("yfinance.Ticker", FakeTicker)
+
+    with pytest.raises(MarketDataRateLimited, match="after 2 attempts"):
+        HistoricalMarketDataProvider.from_yfinance(
+            ["AAPL"],
+            START,
+            START + timedelta(days=2),
+            max_attempts=2,
+            retry_delay=0,
+        )

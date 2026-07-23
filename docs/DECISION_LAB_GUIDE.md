@@ -34,6 +34,14 @@ uv run --frozen streamlit run webui/app.py
 - `TradingAgents + RAG`：使用 `.env` 中配置的模型、C 的完整 Agent 图和 B 的
   `EnhancedMemoryProvider`。
 
+真实模式的 Market source 还提供 `Built-in execution sandbox`。它用于 Yahoo
+限流时继续验证 Agent、RAG、Broker 和 WebUI，不使用真实执行价格，因此不能把其
+收益指标解释为真实历史回测。
+
+若升级前的环境出现 `No module named 'torchvision'`，重新同步 memory extra
+并重启 Streamlit。若 yfinance 持续返回 HTTP 429，页面会在短暂重试后明确提示
+限流；可以稍后重试，或临时选择 execution sandbox。
+
 第一次体验建议使用 `Fast demo`：
 
 1. 打开左侧 **Run Experiment**；
