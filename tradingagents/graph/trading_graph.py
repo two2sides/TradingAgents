@@ -434,8 +434,11 @@ class TradingAgentsGraph:
 
     def _record_decision_via_provider(
         self, ticker: str, trade_date: str, final_state: dict
-    ) -> None:
-        """Build a DecisionRecord and persist it via the memory provider."""
+    ) -> str | None:
+        """Build a DecisionRecord and persist it via the memory provider.
+
+        Returns the memory_id of the PM decision, or None on failure.
+        """
         from datetime import timezone
 
         trade_dt = datetime.fromisoformat(str(trade_date))
@@ -450,6 +453,9 @@ class TradingAgentsGraph:
             confidence=0.5,
             rationale=final_state.get("final_trade_decision", ""),
             warnings=[],
+            metadata={
+                "investment_plan": final_state.get("investment_plan", ""),
+            },
         )
         record = DecisionRecord(
             intent=intent,
@@ -460,7 +466,58 @@ class TradingAgentsGraph:
                 symbol=ticker, as_of=trade_dt,
             ),
         )
-        self.memory_provider.record_decision(record)
+        ref = self.memory_provider.record_decision(record)
+        return ref.memory_id
+
+    def _record_intermediate_analyses(
+        self, ticker: str, trade_date: str, final_state: dict, parent_id: str
+    ) -> None:
+        """Store intermediate analysis results as independent memory records.
+
+        Each analyst report is stored as a separate record linked to
+        *parent_id* so outcomes propagate to all children.
+        """
+        from datetime import timezone
+
+        trade_dt = datetime.fromisoformat(str(trade_date))
+        if trade_dt.tzinfo is None:
+            trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+
+        intermediates: list[tuple[str, str, str]] = [
+            ("market_analyst", "market_report",
+             final_state.get("market_report", "")),
+            ("fundamentals_analyst", "fundamentals_report",
+             final_state.get("fundamentals_report", "")),
+            ("news_analyst", "news_report",
+             final_state.get("news_report", "")),
+            ("research_manager", "investment_plan",
+             final_state.get("investment_plan", "")),
+        ]
+
+        for source, key, content in intermediates:
+            if not content or not content.strip():
+                continue
+
+            intent = TradeIntent(
+                decision_id=f"{parent_id}-{source}",
+                symbol=ticker,
+                as_of=trade_dt,
+                target_weight=0.0,
+                confidence=0.0,
+                rationale=content,
+                warnings=[],
+                metadata={"source": source, "parent": parent_id},
+            )
+            record = DecisionRecord(
+                intent=intent,
+                portfolio_before=PortfolioState(
+                    as_of=trade_dt, cash=0, total_equity=0,
+                ),
+                market_at_decision=MarketSnapshot(
+                    symbol=ticker, as_of=trade_dt,
+                ),
+            )
+            self.memory_provider.record_decision(record)
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
@@ -609,9 +666,13 @@ class TradingAgentsGraph:
         # decision is immediately available for semantic retrieval.
         if self.memory_provider:
             try:
-                self._record_decision_via_provider(
+                pm_id = self._record_decision_via_provider(
                     company_name, trade_date, final_state
                 )
+                if pm_id:
+                    self._record_intermediate_analyses(
+                        company_name, trade_date, final_state, pm_id,
+                    )
             except Exception:
                 logger.exception(
                     "Failed to record decision via memory provider — "

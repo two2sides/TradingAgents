@@ -255,6 +255,12 @@ def _filter_and_score(
             + outcome_weight * outcome
         )
 
+        # Boost chunks whose source matches the querying agent role
+        chunk_source = meta.get("source", "")
+        query_role = kwargs.get("agent_role", "")
+        if chunk_source and chunk_source == query_role:
+            score += 0.05  # small nudge for same-source records
+
         candidates.append((score, {
             "memory_id": meta.get("memory_id", f"unknown-{i}"),
             "symbol": meta.get("symbol", ""),

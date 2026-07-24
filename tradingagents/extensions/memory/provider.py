@@ -123,11 +123,19 @@ class EnhancedMemoryProvider:
         texts = [c["content"] for c in chunks]
         embeddings = self.embedder.embed(texts)
 
-        # 3. Classify tags
+        # 3. Dedup — skip if a near-identical decision for this symbol exists
+        thesis_emb = embeddings[0] if embeddings else None
+        if thesis_emb and self.store.find_similar(thesis_emb, record.intent.symbol):
+            logger.debug(
+                "record_decision: near-duplicate for %s — skipping.", record.intent.symbol,
+            )
+            return MemoryReference(memory_id="mem-dup")
+
+        # 4. Classify tags
         from .chunker import _classify_tags
         agent_tags = _classify_tags(record)
 
-        # 4. Store
+        # 5. Store
         memory_id = self.store.insert(record, chunks, embeddings, agent_tags)
         logger.info(
             "record_decision: stored %s (%d chunks, tags=%s).",
@@ -149,8 +157,20 @@ class EnhancedMemoryProvider:
         if memory_id == "mem-empty":
             return
 
-        # 1. Update outcome metadata on existing chunks
+        # 1. Update outcome metadata on existing chunks (parent + children)
         self.store.update_outcome(memory_id, outcome)
+
+        # Propagate the outcome to all intermediate records linked to this parent
+        raw = outcome.holding_period_return
+        quality = None
+        if raw is not None:
+            if raw > 0.10:        quality = 1.0
+            elif raw > 0.05:      quality = 0.85
+            elif raw > 0.0:       quality = 0.65
+            elif raw > -0.05:     quality = 0.40
+            elif raw > -0.10:     quality = 0.20
+            else:                 quality = 0.10
+        self.store.propagate_outcome(memory_id, raw, quality)
 
         # 2. Retrieve original record context for reflection generation
         record_ctx = self.store.get_record_context(memory_id)

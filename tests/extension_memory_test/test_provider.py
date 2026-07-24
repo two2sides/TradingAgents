@@ -165,3 +165,73 @@ class TestProviderIntegration:
         outcome = make_outcome(holding_period_return=0.10)
         provider.record_outcome(ref, outcome)
         # Should not raise; reflection skipped because _llm is None
+
+    def test_dedup_skips_near_duplicate(self, chromadb_store, memory_embedder):
+        from tradingagents.extensions.memory.provider import EnhancedMemoryProvider
+
+        config = {"memory_db_path": chromadb_store.db_path}
+        provider = EnhancedMemoryProvider.__new__(EnhancedMemoryProvider)
+        provider.config = config
+        provider.store = chromadb_store
+        provider.embedder = memory_embedder
+        from tradingagents.extensions.memory.retrieval import AgentAwareRetriever
+        provider.retriever = AgentAwareRetriever(chromadb_store, memory_embedder)
+        provider.chunker = __import__(
+            "tradingagents.extensions.memory.chunker", fromlist=["DecisionChunker"]
+        ).DecisionChunker()
+        provider._llm = None
+
+        # Insert first decision
+        record1 = make_decision_record(symbol="TSLA", decision_id="dedup-1",
+                                       rationale="Strong buy on EV dominance and margin expansion.")
+        ref1 = provider.record_decision(record1)
+        assert ref1.memory_id.startswith("mem-")
+
+        # Insert identical decision — should be dedup'd
+        record2 = make_decision_record(symbol="TSLA", decision_id="dedup-2",
+                                       rationale="Strong buy on EV dominance and margin expansion.")
+        ref2 = provider.record_decision(record2)
+        assert ref2.memory_id == "mem-dup", f"Expected mem-dup, got {ref2.memory_id}"
+
+    def test_intermediate_record_with_source(self, chromadb_store, memory_embedder):
+        from tradingagents.extensions.memory.provider import EnhancedMemoryProvider
+
+        config = {"memory_db_path": chromadb_store.db_path}
+        provider = EnhancedMemoryProvider.__new__(EnhancedMemoryProvider)
+        provider.config = config
+        provider.store = chromadb_store
+        provider.embedder = memory_embedder
+        from tradingagents.extensions.memory.retrieval import AgentAwareRetriever
+        provider.retriever = AgentAwareRetriever(chromadb_store, memory_embedder)
+        provider.chunker = __import__(
+            "tradingagents.extensions.memory.chunker", fromlist=["DecisionChunker"]
+        ).DecisionChunker()
+        provider._llm = None
+
+        # Store PM decision
+        pm_record = make_decision_record(symbol="META", decision_id="intermediate-pm")
+        pm_ref = provider.record_decision(pm_record)
+
+        # Store intermediate analysis with parent link
+        from tradingagents.extensions.contracts import DecisionRecord, TradeIntent
+        from .conftest import make_portfolio, make_market, make_trade_intent
+
+        market_intent = make_trade_intent(symbol="META",
+                                          rationale="MACD bullish crossover with volume confirmation.")
+        market_intent.metadata["source"] = "market_analyst"
+        market_intent.metadata["parent"] = pm_ref.memory_id
+        market_record = DecisionRecord(
+            intent=market_intent,
+            portfolio_before=make_portfolio(),
+            market_at_decision=make_market("META"),
+        )
+        market_ref = provider.record_decision(market_record)
+        assert market_ref.memory_id.startswith("mem-")
+        assert market_ref.memory_id != pm_ref.memory_id
+
+        # Propagate outcome — should update both parent and child
+        outcome = make_outcome(holding_period_return=0.15)
+        provider.record_outcome(pm_ref, outcome)
+        # Child should now have outcome data
+        child_ctx = chromadb_store.get_record_context(market_ref.memory_id)
+        assert child_ctx is not None

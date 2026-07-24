@@ -22,11 +22,30 @@ from .conftest import (
 # ── Chunking ────────────────────────────────────────────────────────────
 
 class TestDecisionChunker:
-    def test_split_produces_three_chunk_types(self):
+    def test_split_produces_base_chunk_types(self):
         record = make_decision_record()
         chunks = DecisionChunker.split(record)
         types = {c["type"] for c in chunks}
         assert types >= {"thesis", "market_context", "portfolio_context"}
+
+    def test_debate_synthesis_from_metadata(self):
+        record = make_decision_record()
+        record.intent.metadata["investment_plan"] = (
+            "**Recommendation**: Buy\n**Rationale**: Strong bull case.\n"
+            "**Strategic Actions**: Accumulate on dips."
+        )
+        chunks = DecisionChunker.split(record)
+        types = {c["type"] for c in chunks}
+        assert "debate_synthesis" in types
+        ds = next(c for c in chunks if c["type"] == "debate_synthesis")
+        assert "Buy" in ds["content"]
+
+    def test_debate_synthesis_skipped_when_empty(self):
+        record = make_decision_record()
+        record.intent.metadata["investment_plan"] = ""
+        chunks = DecisionChunker.split(record)
+        types = {c["type"] for c in chunks}
+        assert "debate_synthesis" not in types
 
     def test_thesis_chunk_contains_rationale(self):
         record = make_decision_record(rationale="Buy on earnings growth and PE expansion.")

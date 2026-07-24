@@ -79,6 +79,64 @@ class TestOutcomeUpdate:
         chromadb_store.update_outcome("mem-nonexistent", outcome)
 
 
+# ── Source and parent metadata ────────────────────────────────────────
+
+class TestSourceMetadata:
+    def test_source_field_stored(self, chromadb_store):
+        from tradingagents.extensions.contracts import TradeIntent
+
+        intent = make_trade_intent()
+        intent.metadata["source"] = "market_analyst"
+        intent.metadata["parent"] = "mem-parent-001"
+        record = DecisionRecord(
+            intent=intent,
+            portfolio_before=make_portfolio(),
+            market_at_decision=make_market(),
+        )
+        chunks = [{"type": "thesis", "content": "Test."}]
+        embeddings = [[0.9] * 384]
+        mid = chromadb_store.insert(record, chunks, embeddings, ["general"])
+
+        ctx = chromadb_store.get_record_context(mid)
+        assert ctx is not None
+
+
+# ── Deduplication ──────────────────────────────────────────────────────
+
+class TestFindSimilar:
+    def test_empty_store_returns_false(self, chromadb_store):
+        # Empty store should never report a match
+        assert chromadb_store.find_similar([0.1] * 384, "AAPL") is False
+
+    def test_near_duplicate_detected(self, chromadb_store):
+        record = make_decision_record(decision_id="dedup-test")
+        chunks = [{"type": "thesis", "content": "Buy on AI demand strength."}]
+        embeddings = [[0.2] * 384]
+        chromadb_store.insert(record, chunks, embeddings, ["bull_thesis"])
+
+        # Same embedding should match itself at threshold=0.95
+        assert chromadb_store.find_similar([0.2] * 384, "AAPL") is True
+
+    def test_different_embedding_not_duplicate(self, chromadb_store):
+        record = make_decision_record(decision_id="dedup-diff")
+        chunks = [{"type": "thesis", "content": "Buy on momentum."}]
+        embeddings = [[0.3] * 384]
+        chromadb_store.insert(record, chunks, embeddings, ["general"])
+
+        # Orthogonal-ish embedding should not match
+        orthogonal = [1.0] * 384
+        assert chromadb_store.find_similar(orthogonal, "AAPL", threshold=0.5) is False
+
+    def test_different_symbol_not_matched(self, chromadb_store):
+        record = make_decision_record(symbol="NVDA", decision_id="dedup-nvda")
+        chunks = [{"type": "thesis", "content": "Strong GPU demand."}]
+        embeddings = [[0.4] * 384]
+        chromadb_store.insert(record, chunks, embeddings, ["bull_thesis"])
+
+        # Querying for a different symbol should not match
+        assert chromadb_store.find_similar([0.4] * 384, "AAPL") is False
+
+
 # ── Reflection chunk append ────────────────────────────────────────────
 
 class TestReflectionAppend:
