@@ -232,6 +232,22 @@ class TestProviderIntegration:
         # Propagate outcome — should update both parent and child
         outcome = make_outcome(holding_period_return=0.15)
         provider.record_outcome(pm_ref, outcome)
-        # Child should now have outcome data
-        child_ctx = chromadb_store.get_record_context(market_ref.memory_id)
-        assert child_ctx is not None
+
+        # Verify child received the propagated outcome values
+        child_chunks = chromadb_store.collection.get(
+            where={"memory_id": market_ref.memory_id},
+            include=["metadatas"],
+        )
+        assert child_chunks["ids"], "Child record should still exist"
+        child_meta = child_chunks["metadatas"][0]
+        assert child_meta.get("outcome_raw") == 0.15
+        assert child_meta.get("outcome_alpha") == 0.15
+        assert child_meta.get("outcome_quality") is not None  # 0.15 > 0.10 → quality=1.0
+
+        # Also verify parent was updated
+        parent_chunks = chromadb_store.collection.get(
+            where={"memory_id": pm_ref.memory_id},
+            include=["metadatas"],
+        )
+        parent_meta = parent_chunks["metadatas"][0]
+        assert parent_meta.get("outcome_raw") == 0.15

@@ -116,6 +116,13 @@ class TestTagClassification:
         tags = _classify_tags(record)
         assert "bear_thesis" in tags
 
+    def test_debate_tags(self):
+        record = make_decision_record(
+            rationale="**Recommendation**: Buy. Strategic actions: accumulate on dips per the research plan."
+        )
+        tags = _classify_tags(record)
+        assert "debate" in tags
+
     def test_no_keywords_returns_general(self):
         record = make_decision_record(rationale="Market conditions are mixed.")
         tags = _classify_tags(record)

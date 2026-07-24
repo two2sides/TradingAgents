@@ -178,6 +178,7 @@ class AgentAwareRetriever:
                     "tags": data.get("tags", ""),
                     "outcome_raw": data.get("outcome_raw"),
                     "outcome_alpha": data.get("outcome_alpha"),
+                    "source": data.get("source", ""),
                 },
             ))
 
@@ -271,6 +272,7 @@ def _filter_and_score(
             "confidence": meta.get("confidence"),
             "outcome_raw": meta.get("outcome_raw"),
             "outcome_alpha": meta.get("outcome_alpha"),
+            "source": meta.get("source", ""),
             "content": doc,
         }))
 

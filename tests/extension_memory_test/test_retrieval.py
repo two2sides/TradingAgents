@@ -145,3 +145,47 @@ class TestRoleSpecificRetrieval:
         ma = get_profile("market_analyst")
         # Bear researcher cares most about whether the thesis was correct
         assert br.outcome_weight > ma.outcome_weight
+
+    def test_source_boost_prefers_same_source_records(self, chromadb_store, memory_embedder):
+        """Records from the same source as the querier should rank higher."""
+        from tradingagents.extensions.memory.retrieval import AgentAwareRetriever
+        from tradingagents.extensions.memory.chunker import DecisionChunker, _classify_tags
+
+        chunker = DecisionChunker()
+
+        # Insert a record with source=market_analyst (should be boosted)
+        source_record = make_decision_record(
+            symbol="AMD",
+            decision_id="source-amd",
+            rationale="RSI divergence with volume spike — potential reversal signal.",
+        )
+        source_record.intent.metadata["source"] = "market_analyst"
+        source_chunks = chunker.split(source_record)
+        source_embs = memory_embedder.embed([c["content"] for c in source_chunks])
+        source_tags = _classify_tags(source_record)
+        source_mid = chromadb_store.insert(source_record, source_chunks, source_embs, source_tags)
+
+        # Insert a record for the same symbol WITHOUT source (no boost)
+        no_source_record = make_decision_record(
+            symbol="AMD",
+            decision_id="nosource-amd",
+            rationale="General market overview — sector rotation into semis.",
+        )
+        no_source_chunks = chunker.split(no_source_record)
+        no_source_embs = memory_embedder.embed([c["content"] for c in no_source_chunks])
+        no_source_tags = _classify_tags(no_source_record)
+        chromadb_store.insert(no_source_record, no_source_chunks, no_source_embs, no_source_tags)
+
+        retriever = AgentAwareRetriever(chromadb_store, memory_embedder)
+        query = make_memory_query(symbol="AMD", agent_role="market_analyst")
+        profile = get_profile("market_analyst")
+
+        result = retriever.retrieve(query, profile)
+        assert len(result.items) >= 1
+
+        # The same-source record should appear in results
+        source_ids = {
+            item.memory_id for item in result.items
+            if item.metadata.get("source") == "market_analyst"
+        }
+        assert source_mid in source_ids, "Market analyst source record should be retrieved"
