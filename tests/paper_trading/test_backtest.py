@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tradingagents.extensions.contracts import BacktestRequest, ExecutionConfig, MarketBar
+from tradingagents.extensions.contracts import (
+    BacktestRequest,
+    DecisionEnvelope,
+    ExecutionConfig,
+    MarketBar,
+    TradeIntent,
+)
 from tradingagents.extensions.paper_trading import (
     DemoMemoryProvider,
     EventCollector,
@@ -126,6 +132,78 @@ def test_decision_provider_failure_preserves_position_and_run_continues():
     assert all(execution.status == "NO_ACTION" for execution in result.executions)
     assert result.equity_curve[-1].total_equity == 10_000
     assert any("simulated model outage" in warning for warning in result.warnings)
+
+
+def test_returned_failed_safe_preserves_shares_after_next_open_price_gap():
+    bars = [
+        MarketBar(
+            timestamp=START + timedelta(days=index),
+            open=open_price,
+            high=max(open_price, close) + 1,
+            low=min(open_price, close) - 1,
+            close=close,
+            volume=10_000,
+        )
+        for index, (open_price, close) in enumerate(
+            [(100, 100), (100, 100), (200, 200)]
+        )
+    ]
+    provider = HistoricalMarketDataProvider({"AAPL": bars}, source="gap-bars")
+    request = BacktestRequest(
+        symbols=["AAPL"],
+        start=START,
+        end=START + timedelta(days=2),
+        initial_cash=10_000,
+        lookback=3,
+        decision_interval_bars=1,
+        outcome_horizon_bars=1,
+        execution=ExecutionConfig(commission_rate=0, slippage_rate=0),
+    )
+
+    class BuyThenFailSafe:
+        calls = 0
+
+        def decide(self, decision_request):
+            self.calls += 1
+            current_weight = decision_request.portfolio.weight_for("AAPL")
+            if self.calls == 1:
+                return DecisionEnvelope(
+                    intent=TradeIntent(
+                        decision_id="buy-first",
+                        symbol="AAPL",
+                        as_of=decision_request.as_of,
+                        target_weight=0.5,
+                        confidence=1,
+                        rationale="Establish the initial position.",
+                    ),
+                    status="SUCCESS",
+                )
+            return DecisionEnvelope(
+                intent=TradeIntent(
+                    decision_id="failed-safe-second",
+                    symbol="AAPL",
+                    as_of=decision_request.as_of,
+                    target_weight=current_weight,
+                    confidence=0,
+                    rationale="Preserve the position after an unusable model result.",
+                    warnings=["model output could not be parsed"],
+                ),
+                status="FAILED_SAFE",
+            )
+
+    result = HistoricalBacktestRunner(provider).run(
+        request,
+        BuyThenFailSafe(),
+        DemoMemoryProvider(),
+    )
+
+    assert [execution.status for execution in result.executions] == [
+        "FILLED",
+        "NO_ACTION",
+    ]
+    assert result.executions[1].fills == []
+    assert result.portfolio_history[-1].positions["AAPL"].quantity == 50
+    assert "model output could not be parsed" in result.warnings
 
 
 def test_metrics_report_drawdown_fees_and_turnover():

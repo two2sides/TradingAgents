@@ -204,7 +204,9 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
         data = downloaded
 
     data = _clean_dataframe(data)
-    data = data[data["Date"] <= curr_date_dt]
+    # Daily Yahoo rows include an intraday market-open timestamp. Filter by
+    # calendar day so the requested trading day remains inclusive.
+    data = data[data["Date"].dt.date <= curr_date_dt.date()]
     _assert_ohlcv_not_stale(data, curr_date, symbol, canonical)
     return data
 

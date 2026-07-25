@@ -709,6 +709,39 @@ class TestPortfolioManagerInjection:
         pm_node(state)
         assert "Lessons from prior decisions" not in captured["prompt"]
 
+    def test_graph_consumes_rag_past_context_alias_once(self):
+        """RAG PM memory replaces the fallback without duplicate kwargs."""
+        graph = MagicMock()
+        graph.memory_provider = MagicMock()
+        graph.memory_log.get_past_context.return_value = "legacy markdown context"
+        graph._retrieve_agent_memories.return_value = {
+            "memory_portfolio_manager": "enhanced RAG context",
+            "past_context": "enhanced RAG context",
+            "memory_provider": graph.memory_provider,
+        }
+        graph.resolve_instrument_context.return_value = "AAPL | Apple Inc."
+        graph.propagator.create_initial_state.return_value = {"initial": True}
+        graph.propagator.get_graph_args.return_value = {}
+        graph.config = {"checkpoint_enabled": False}
+        graph.debug = False
+        graph.graph.invoke.return_value = {
+            "final_trade_decision": "Rating: Hold",
+        }
+        graph.process_signal.return_value = "Hold"
+
+        final_state, signal = TradingAgentsGraph._run_graph(
+            graph,
+            "AAPL",
+            "2026-07-01",
+        )
+
+        kwargs = graph.propagator.create_initial_state.call_args.kwargs
+        assert kwargs["past_context"] == "enhanced RAG context"
+        assert kwargs["memory_portfolio_manager"] == "enhanced RAG context"
+        assert kwargs["memory_provider"] is graph.memory_provider
+        assert final_state["final_trade_decision"] == "Rating: Hold"
+        assert signal == "Hold"
+
     def test_pm_prompt_includes_ground_truth_portfolio_context(self):
         captured = {}
         llm = _structured_pm_llm(captured)

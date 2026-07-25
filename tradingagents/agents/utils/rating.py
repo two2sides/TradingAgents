@@ -26,13 +26,21 @@ _RATING_LABEL_RE = re.compile(
 )
 
 # Chinese / bilingual decision lines (Portfolio Manager often writes these
-# when structured-output falls back to free text).
+# when structured-output falls back to free text). Both the label and value
+# may be Markdown-bold, and a Chinese label may still carry a canonical
+# English rating such as ``**评级**: Overweight``.
+_CN_OR_EN_RATING = (
+    r"买入|加仓|增持|超配|持有|维持|减持|低配|卖出|清仓|"
+    r"Buy|Overweight|Hold|Underweight|Sell"
+)
 _CN_DECISION_RE = re.compile(
-    r"(?:最终)?(?:交易)?决策\s*[:：]\s*(?:\*\*)?\s*(买入|加仓|增持|超配|持有|维持|减持|低配|卖出|清仓)",
+    rf"(?:\*\*)?(?:最终)?(?:交易)?决策(?:\*\*)?\s*[:：]\s*"
+    rf"(?:\*\*)?\s*({_CN_OR_EN_RATING})",
     re.IGNORECASE,
 )
 _CN_RATING_RE = re.compile(
-    r"(?:评级|结论)\s*[:：]\s*(?:\*\*)?\s*(买入|加仓|增持|超配|持有|维持|减持|低配|卖出|清仓)",
+    rf"(?:\*\*)?(?:评级|结论)(?:\*\*)?\s*[:：]\s*"
+    rf"(?:\*\*)?\s*({_CN_OR_EN_RATING})",
     re.IGNORECASE,
 )
 
@@ -113,7 +121,10 @@ def parse_rating_strict(text: str, *, expected_label: str | None = None) -> Rati
     ):
         match = pattern.search(value)
         if match:
-            return RatingParseResult(_CN_MAP[match.group(1)], source, None)
+            raw = match.group(1)
+            parsed = _canon(raw) or _CN_MAP.get(raw)
+            if parsed:
+                return RatingParseResult(parsed, source, None)
     return RatingParseResult(None, "none", "no explicit rating/recommendation/action label")
 
 
@@ -157,7 +168,10 @@ def parse_rating(text: str, default: str = "Hold") -> str:
     for line in text.splitlines():
         m = _CN_DECISION_RE.search(line) or _CN_RATING_RE.search(line)
         if m:
-            return _CN_MAP[m.group(1)]
+            raw = m.group(1)
+            parsed = _canon(raw) or _CN_MAP.get(raw)
+            if parsed:
+                return parsed
 
     # Prefer the last parenthetical rating (often on the decision line).
     parens = list(_PAREN_RATING_RE.finditer(text))

@@ -197,6 +197,32 @@ def test_graph_adapter_fails_safe_when_rating_is_not_explicit():
     assert "not explicit" in result.intent.warnings[0]
 
 
+def test_graph_adapter_accepts_markdown_chinese_label_with_english_rating():
+    class BilingualGraph:
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
+            return (
+                {
+                    "final_trade_decision": (
+                        "**评级**: Overweight\n\n"
+                        "维持高于中性的多头敞口，但不在阻力位追高。"
+                    )
+                },
+                "Overweight",
+            )
+
+    result = TradingAgentsGraphDecisionProvider(BilingualGraph()).decide(make_request())
+
+    assert result.status == "SUCCESS"
+    assert result.intent.metadata["rating"] == "Overweight"
+    assert result.intent.target_weight == pytest.approx(0.2625)
+
+
 def test_graph_adapter_turns_hold_into_a_neutral_entry_from_cash():
     class HoldGraph:
         def propagate(

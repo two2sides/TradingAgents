@@ -39,7 +39,8 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     df = data.copy()
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["Date"])
-    df = df[df["Date"] <= pd.to_datetime(curr_date)].sort_values("Date")
+    cutoff_day = pd.to_datetime(curr_date).date()
+    df = df[df["Date"].dt.date <= cutoff_day].sort_values("Date")
     if df.empty:
         raise ValueError(f"No OHLCV rows on or before {curr_date} for {symbol}.")
     return df

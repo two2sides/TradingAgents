@@ -577,6 +577,20 @@ class TradingAgentsGraph:
             extra_state = self._retrieve_agent_memories(
                 company_name, trade_date
             )
+            # The enhanced provider exposes portfolio-manager memory under
+            # both its role-specific key and the legacy ``past_context``
+            # alias. Consume the alias before expanding ``extra_state`` so
+            # create_initial_state never receives the same keyword twice.
+            # Prefer RAG memory when present; otherwise keep the markdown-log
+            # fallback loaded above.
+            rag_past_context = extra_state.pop("past_context", "")
+            if rag_past_context:
+                past_context = rag_past_context
+                logger.debug(
+                    "Using RAG portfolio-manager context for ticker=%s date=%s",
+                    company_name,
+                    trade_date,
+                )
 
         init_agent_state = self.propagator.create_initial_state(
             company_name,

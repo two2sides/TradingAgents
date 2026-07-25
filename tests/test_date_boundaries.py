@@ -40,22 +40,31 @@ def test_get_yfin_requests_inclusive_end(monkeypatch):
 
 
 @pytest.mark.unit
-def test_load_ohlcv_requests_inclusive_end(monkeypatch, tmp_path):
+def test_load_ohlcv_includes_intraday_timestamp_on_requested_day(monkeypatch, tmp_path):
     set_config({"data_cache_dir": str(tmp_path)})
     captured = {}
 
-    def fake_download(symbol, start, end, **kwargs):
+    def fake_download(symbol, start, end):
         captured["end"] = end
-        idx = pd.to_datetime([pd.Timestamp.today().normalize()])
+        requested_day = pd.Timestamp.today().normalize()
         return pd.DataFrame(
-            {"Open": [100.0], "High": [100.0], "Low": [100.0],
-             "Close": [100.0], "Volume": [1]},
-            index=idx,
+            {
+                "Date": [requested_day + pd.Timedelta(hours=13, minutes=30)],
+                "Open": [100.0],
+                "High": [100.0],
+                "Low": [100.0],
+                "Close": [100.0],
+                "Volume": [1],
+            },
         )
 
-    monkeypatch.setattr(su.yf, "download", fake_download)
+    monkeypatch.setattr(
+        "tradingagents.dataflows.yahoo_chart.fetch_yahoo_chart_ohlcv",
+        fake_download,
+    )
     today = pd.Timestamp.today().strftime("%Y-%m-%d")
-    su.load_ohlcv("AAPL", today)
+    result = su.load_ohlcv("AAPL", today)
 
-    expected_end = (pd.Timestamp.today() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    assert captured["end"] == expected_end  # tomorrow -> today's row included (#986)
+    assert captured["end"] == today
+    assert len(result) == 1
+    assert result.iloc[0]["Date"].date() == pd.Timestamp(today).date()

@@ -368,6 +368,14 @@ class HistoricalBacktestRunner:
                 raise ValueError(f"duplicate decision_id {intent.decision_id}")
             if envelope.status == "FAILED_SAFE" and intent.target_weight != current_weight:
                 raise ValueError("FAILED_SAFE decision must preserve current weight")
+            for warning in intent.warnings:
+                self._warn(warnings, warning)
+            if envelope.status == "FAILED_SAFE" and not intent.warnings:
+                self._warn(
+                    warnings,
+                    f"{request.symbol} {request.as_of.date()}: "
+                    "decision provider returned FAILED_SAFE",
+                )
             return envelope
         except Exception as exc:
             message = f"{request.symbol} {request.as_of.date()}: decision failed safe: {exc}"
@@ -401,6 +409,37 @@ class HistoricalBacktestRunner:
         observer: RunObserver | None,
     ) -> ExecutionReport:
         intent = item.envelope.intent
+        if item.envelope.status == "FAILED_SAFE":
+            # A target weight captured at decision time can drift before the
+            # NEXT_OPEN quote and accidentally trade even though failed-safe
+            # semantics require preserving the exact position. Mark the new
+            # quote for accurate valuation, but never call rebalance.
+            if item.quote is not None:
+                portfolio = broker.mark_to_market(
+                    item.quote.timestamp,
+                    {intent.symbol: item.quote.price},
+                )
+                event_at = item.quote.timestamp
+                raw_quote = item.quote.price
+            else:
+                portfolio = item.portfolio_before
+                event_at = intent.as_of
+                raw_quote = None
+            report = ExecutionReport(
+                decision_id=intent.decision_id,
+                status="NO_ACTION",
+                requested_target_weight=intent.target_weight,
+                achieved_weight=portfolio.weight_for(intent.symbol),
+                metadata={
+                    "requested_quantity": 0,
+                    "executed_quantity": 0,
+                    "raw_quote": raw_quote,
+                    "reason": "FAILED_SAFE preserves the existing share quantity",
+                },
+            )
+            self._emit_execution(observer, event_at, intent, report)
+            return report
+
         if item.quote is None:
             reason = "no execution quote available after decision"
             return ExecutionReport(
@@ -410,6 +449,7 @@ class HistoricalBacktestRunner:
                 achieved_weight=item.portfolio_before.weight_for(intent.symbol),
                 rejection_reason=reason,
             )
+        event_at = item.quote.timestamp
         try:
             report = broker.rebalance(intent, item.quote)
         except Exception as exc:
@@ -422,9 +462,19 @@ class HistoricalBacktestRunner:
                 achieved_weight=item.portfolio_before.weight_for(intent.symbol),
                 rejection_reason=reason,
             )
+        self._emit_execution(observer, event_at, intent, report)
+        return report
+
+    def _emit_execution(
+        self,
+        observer: RunObserver | None,
+        timestamp: datetime,
+        intent: TradeIntent,
+        report: ExecutionReport,
+    ) -> None:
         self._emit(
             observer,
-            item.quote.timestamp,
+            timestamp,
             "EXECUTION",
             f"Execution {report.status} for {intent.symbol}",
             None,
@@ -439,7 +489,6 @@ class HistoricalBacktestRunner:
                 "rejection_reason": report.rejection_reason,
             },
         )
-        return report
 
     def _record_decision(
         self,
