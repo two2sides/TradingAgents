@@ -11,7 +11,10 @@ from tradingagents.extensions.contracts import (
     PortfolioState,
     TradeIntent,
 )
-from .conftest import has_chromadb, make_decision_record, make_outcome, NOW, make_trade_intent, make_portfolio
+from .conftest import (
+    has_chromadb, make_decision_record, make_market, make_outcome,
+    make_portfolio, make_trade_intent, NOW,
+)
 
 pytestmark = pytest.mark.skipif(not has_chromadb(), reason="chromadb not installed")
 
@@ -77,6 +80,71 @@ class TestOutcomeUpdate:
         outcome = DecisionOutcome(observed_at=datetime.now(timezone.utc))
         # Should not raise
         chromadb_store.update_outcome("mem-nonexistent", outcome)
+
+
+# ── Source and parent metadata ────────────────────────────────────────
+
+class TestSourceMetadata:
+    def test_source_field_stored(self, chromadb_store):
+        from tradingagents.extensions.contracts import TradeIntent
+
+        intent = make_trade_intent()
+        intent.metadata["source"] = "market_analyst"
+        intent.metadata["parent"] = "mem-parent-001"
+        record = DecisionRecord(
+            intent=intent,
+            portfolio_before=make_portfolio(),
+            market_at_decision=make_market(),
+        )
+        chunks = [{"type": "thesis", "content": "Test."}]
+        embeddings = [[0.9] * 384]
+        mid = chromadb_store.insert(record, chunks, embeddings, ["general"])
+
+        ctx = chromadb_store.get_record_context(mid)
+        assert ctx is not None
+
+
+# ── Deduplication ──────────────────────────────────────────────────────
+
+def _make_embedding(seed: float, dim: int = 384) -> list[float]:
+    """Generate a deterministic but non-uniform pseudo-embedding."""
+    return [(seed * (i + 1)) % 1.0 for i in range(dim)]
+
+
+class TestFindSimilar:
+    def test_empty_store_returns_false(self, tmp_path):
+        from tradingagents.extensions.memory.store import MemoryStore
+        store = MemoryStore(path=str(tmp_path / "dedup_empty"))
+        assert store.find_similar(_make_embedding(0.1), "AAPL") is False
+
+    def test_near_duplicate_detected(self, tmp_path):
+        from tradingagents.extensions.memory.store import MemoryStore
+        store = MemoryStore(path=str(tmp_path / "dedup_match"))
+        record = make_decision_record(decision_id="dedup-test")
+        chunks = [{"type": "thesis", "content": "Buy on AI demand strength."}]
+        emb = _make_embedding(0.5)
+        store.insert(record, chunks, [emb], ["bull_thesis"])
+        # Same embedding should match itself at threshold=0.95
+        assert store.find_similar(emb, "AAPL") is True
+
+    def test_different_embedding_not_duplicate(self, tmp_path):
+        from tradingagents.extensions.memory.store import MemoryStore
+        store = MemoryStore(path=str(tmp_path / "dedup_diff"))
+        record = make_decision_record(decision_id="dedup-diff")
+        chunks = [{"type": "thesis", "content": "Buy on momentum."}]
+        store.insert(record, chunks, [_make_embedding(0.3)], ["general"])
+        # Very different pseudo-embedding should not match at the strict default
+        assert store.find_similar(_make_embedding(0.9), "AAPL") is False
+
+    def test_different_symbol_not_matched(self, tmp_path):
+        from tradingagents.extensions.memory.store import MemoryStore
+        store = MemoryStore(path=str(tmp_path / "dedup_sym"))
+        record = make_decision_record(symbol="NVDA", decision_id="dedup-nvda")
+        chunks = [{"type": "thesis", "content": "Strong GPU demand."}]
+        emb = _make_embedding(0.7)
+        store.insert(record, chunks, [emb], ["bull_thesis"])
+        # Querying for a different symbol should not match
+        assert store.find_similar(emb, "AAPL") is False
 
 
 # ── Reflection chunk append ────────────────────────────────────────────

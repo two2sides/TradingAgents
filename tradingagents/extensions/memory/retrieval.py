@@ -178,6 +178,7 @@ class AgentAwareRetriever:
                     "tags": data.get("tags", ""),
                     "outcome_raw": data.get("outcome_raw"),
                     "outcome_alpha": data.get("outcome_alpha"),
+                    "source": data.get("source", ""),
                 },
             ))
 
@@ -255,6 +256,12 @@ def _filter_and_score(
             + outcome_weight * outcome
         )
 
+        # Boost chunks whose source matches the querying agent role
+        chunk_source = meta.get("source", "")
+        query_role = kwargs.get("agent_role", "")
+        if chunk_source and chunk_source == query_role:
+            score += 0.05  # small nudge for same-source records
+
         candidates.append((score, {
             "memory_id": meta.get("memory_id", f"unknown-{i}"),
             "symbol": meta.get("symbol", ""),
@@ -265,6 +272,7 @@ def _filter_and_score(
             "confidence": meta.get("confidence"),
             "outcome_raw": meta.get("outcome_raw"),
             "outcome_alpha": meta.get("outcome_alpha"),
+            "source": meta.get("source", ""),
             "content": doc,
         }))
 

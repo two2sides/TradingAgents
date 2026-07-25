@@ -118,8 +118,9 @@ class TestAgentMemoryProfile:
         expected = {
             "query_text", "symbol", "cross_ticker", "chunk_types",
             "interest_tags", "sim_weight", "recency_weight", "outcome_weight",
-            "max_items", "as_of", "limit",
+            "max_items", "as_of", "limit", "agent_role",
         }
         assert set(kwargs.keys()) == expected
         assert kwargs["symbol"] == "MSFT"
         assert kwargs["max_items"] == profile.max_items
+        assert kwargs["agent_role"] == "market_analyst"

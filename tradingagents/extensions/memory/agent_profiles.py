@@ -119,6 +119,7 @@ class AgentMemoryProfile:
             "max_items": self.max_items,
             "as_of": query.as_of,
             "limit": query.limit,
+            "agent_role": self.role,
         }
 
 
@@ -304,7 +305,7 @@ PROFILES: dict[str, AgentMemoryProfile] = {
     ),
     "research_manager": AgentMemoryProfile(
         role="research_manager",
-        chunk_types=["thesis", "reflection"],
+        chunk_types=["debate_synthesis", "thesis", "reflection"],
         interest_tags=[
             "debate", "bull_bear", "thesis", "disagreement",
             "research", "synthesis",
@@ -324,7 +325,7 @@ PROFILES: dict[str, AgentMemoryProfile] = {
     ),
     "portfolio_manager": AgentMemoryProfile(
         role="portfolio_manager",
-        chunk_types=["thesis", "market_context", "reflection", "portfolio_context"],
+        chunk_types=["thesis", "market_context", "debate_synthesis", "reflection", "portfolio_context"],
         interest_tags=["*"],  # PM sees everything
         sim_weight=0.40, recency_weight=0.30, outcome_weight=0.30,
         cross_ticker=True, max_items=5,

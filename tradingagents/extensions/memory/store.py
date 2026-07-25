@@ -30,6 +30,8 @@ _KEY_DECISION_AT = "decision_at"
 _KEY_AVAILABLE_AT = "available_at"
 _KEY_TAGS = "agent_tags"
 _KEY_CONFIDENCE = "confidence"
+_KEY_SOURCE = "source"
+_KEY_PARENT = "parent"
 
 
 def _to_ts(dt: datetime) -> float:
@@ -110,6 +112,8 @@ class MemoryStore:
         ids: list[str] = []
         docs: list[str] = []
         embs: list[list[float]] = []
+        source = (record.intent.metadata or {}).get("source", "")
+        parent = (record.intent.metadata or {}).get("parent", "")
         metas: list[dict] = []
 
         for i, chunk in enumerate(chunks):
@@ -122,9 +126,11 @@ class MemoryStore:
                 _KEY_CHUNK_TYPE: chunk["type"],
                 _KEY_SYMBOL: record.intent.symbol,
                 _KEY_DECISION_AT: decision_ts,
-                _KEY_AVAILABLE_AT: decision_ts,  # decision-time data available immediately
+                _KEY_AVAILABLE_AT: decision_ts,
                 _KEY_TAGS: tags_str,
                 _KEY_CONFIDENCE: record.intent.confidence,
+                _KEY_SOURCE: source,
+                _KEY_PARENT: parent,
                 "outcome_raw": None,
                 "outcome_alpha": None,
                 "outcome_quality": None,
@@ -215,6 +221,66 @@ class MemoryStore:
 
     def count(self) -> int:
         return self._collection.count()
+
+    def propagate_outcome(
+        self, parent_id: str, outcome_raw: float | None, outcome_quality: float | None
+    ) -> None:
+        """Propagate outcome metadata to all child records of *parent_id*."""
+        try:
+            children = self._collection.get(where={_KEY_PARENT: parent_id})
+        except Exception:
+            return
+
+        if not children or not children["ids"]:
+            return
+
+        new_metas = []
+        for meta in children["metadatas"]:
+            meta = dict(meta)
+            meta["outcome_raw"] = outcome_raw
+            meta["outcome_alpha"] = outcome_raw
+            meta["outcome_quality"] = outcome_quality
+            new_metas.append(meta)
+
+        self._collection.update(
+            ids=children["ids"],
+            metadatas=[_sanitize_meta(m) for m in new_metas],
+        )
+        logger.debug(
+            "Propagated outcome to %d child records of %s.",
+            len(children["ids"]), parent_id,
+        )
+
+    def find_similar(
+        self,
+        embedding: list[float],
+        symbol: str,
+        threshold: float = 0.95,
+    ) -> bool:
+        """Check whether a very similar memory already exists for *symbol*.
+
+        Returns True if any existing chunk's cosine similarity to *embedding*
+        exceeds *threshold*, meaning the new memory would be near-duplicate.
+        """
+        if self._collection.count() == 0:
+            return False
+        try:
+            results = self._collection.query(
+                query_embeddings=[embedding],
+                n_results=3,
+                where={"symbol": symbol},
+                include=["distances"],
+            )
+        except Exception:
+            return False
+
+        if not results or not results.get("distances") or not results["distances"][0]:
+            return False
+
+        # ChromaDB cosine distance ∈ [0, 2]; similarity = 1 - distance/2
+        min_dist = min(results["distances"][0])
+        similarity = 1.0 - min_dist / 2.0
+        return similarity >= threshold
 
 
 def _outcome_quality(outcome: DecisionOutcome) -> float | None:

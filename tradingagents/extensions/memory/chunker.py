@@ -21,6 +21,7 @@ _CHUNK_LIMITS: dict[str, int] = {
     "market_context": 500,
     "portfolio_context": 400,
     "reflection": 600,
+    "debate_synthesis": 600,
 }
 
 
@@ -113,6 +114,7 @@ def _classify_tags(record: DecisionRecord) -> list[str]:
         (["position size", "allocation", "weight", "exposure", "concentration"], "position_sizing"),
         (["entry", "execution", "timing", "slippage", "liquidity"], "execution"),
         (["competitive", "moat", "market share", "disruption"], "competitive_advantage"),
+        (["recommendation", "strategic action", "debate", "research plan"], "debate"),
     ]
 
     for keywords, tag in _KEYWORD_MAP:
@@ -152,6 +154,15 @@ class DecisionChunker:
             chunks.append({
                 "type": "portfolio_context",
                 "content": portfolio,
+            })
+
+        # Debate synthesis chunk — Research Manager's investment plan
+        # (injected via intent.metadata by the graph's record_decision path)
+        investment_plan = (record.intent.metadata or {}).get("investment_plan", "")
+        if investment_plan and investment_plan.strip():
+            chunks.append({
+                "type": "debate_synthesis",
+                "content": _truncate(investment_plan.strip(), _CHUNK_LIMITS["debate_synthesis"]),
             })
 
         return chunks
