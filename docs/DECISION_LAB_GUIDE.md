@@ -166,7 +166,7 @@ memory = EnhancedMemoryProvider(
 )
 decision = TradingAgentsGraphDecisionProvider(
     graph,
-    RatingAllocationPolicy(max_position_weight=0.35),
+    RatingAllocationPolicy(max_position_weight=0.80),
 )
 request = BacktestRequest(...)
 market_data = HistoricalMarketDataProvider.from_yahoo_chart(
@@ -196,7 +196,7 @@ stored = service.run_and_store(
 
 ### 默认评级仓位政策
 
-默认单标的仓位上限为 35%，多标的还会使用 `min(35%, 1/N)`。五档评级
+默认单标的仓位上限为 80%，多标的还会使用 `min(80%, 1/N)`。五档评级
 表示绝对目标暴露，而不是“相对当前仓位买一点或卖一点”：
 
 | Portfolio Manager 评级 | 目标仓位规则 |
@@ -206,6 +206,10 @@ stored = service.run_and_store(
 | Hold | 分散上限的 50%（中性暴露） |
 | Underweight | 分散上限的 25%（防御暴露） |
 | Sell | 清零 |
+
+因此默认单标的目标依次为 80% / 60% / 40% / 20% / 0%。WebUI 的
+`Maximum single-symbol position` 可以在每次回测前调整这个上限，五档按同一
+比例缩放。
 
 因此空仓账户收到 `Hold` 或 `Underweight` 时也会建立对应的小仓位。适配器还会把
 实际现金、全部持仓、当前标的权重和上述可执行仓位档位注入 Trader 与 Portfolio

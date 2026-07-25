@@ -15,6 +15,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AllocationDecision": ("integrations", "AllocationDecision"),
     "BacktestApplicationService": ("service", "BacktestApplicationService"),
     "CompositeRunObserver": ("observers", "CompositeRunObserver"),
+    "DEFAULT_MAX_POSITION_WEIGHT": ("settings", "DEFAULT_MAX_POSITION_WEIGHT"),
     "DemoMemoryProvider": ("demo", "DemoMemoryProvider"),
     "DecisionReplayItem": ("view_models", "DecisionReplayItem"),
     "EventCollector": ("observers", "EventCollector"),

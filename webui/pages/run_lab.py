@@ -12,6 +12,7 @@ import streamlit as st
 from tradingagents.extensions.contracts import BacktestRequest, ExecutionConfig
 from tradingagents.extensions.paper_trading import (
     BacktestApplicationService,
+    DEFAULT_MAX_POSITION_WEIGHT,
     DemoMemoryProvider,
     HistoricalMarketDataProvider,
     InsufficientMarketBars,
@@ -246,7 +247,7 @@ def render() -> None:
             )
 
         selected_analyst_labels: list[str] = []
-        max_position_percent = 35.0
+        max_position_percent = DEFAULT_MAX_POSITION_WEIGHT * 100
         if real_mode:
             agent_columns = st.columns([2, 1])
             with agent_columns[0]:
@@ -258,15 +259,15 @@ def render() -> None:
                 )
             with agent_columns[1]:
                 max_position_percent = st.number_input(
-                    "Position entry cap · %",
+                    "Maximum single-symbol position · %",
                     min_value=1.0,
                     max_value=100.0,
-                    value=35.0,
+                    value=DEFAULT_MAX_POSITION_WEIGHT * 100,
                     step=5.0,
                     help=(
-                        "五档评级的绝对仓位基准：Buy=100%、Overweight=75%、"
-                        "Hold=50%、Underweight=25%、Sell=0%；多标的还会应用 "
-                        "1/N 分散上限。"
+                        "默认 80%。单标的五档目标为 Buy=80%、Overweight=60%、"
+                        "Hold=40%、Underweight=20%、Sell=0%。修改上限后五档会"
+                        "同比缩放；多标的还会应用 1/N 分散上限。"
                     ),
                 )
 
@@ -338,6 +339,9 @@ def render() -> None:
             "decision_engine": "tradingagents_rag" if real_mode else "deterministic_demo",
             "selected_analysts": list(analyst_ids),
             "estimated_agent_calls": estimated_agent_calls if real_mode else 0,
+            "max_position_weight": (
+                max_position_percent / 100 if real_mode else None
+            ),
         },
     )
     fetch_start = start_at - timedelta(days=max(45, int(lookback) * 2))

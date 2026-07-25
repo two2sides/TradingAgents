@@ -83,10 +83,10 @@ def make_request(*, current_weight: float = 0.2) -> DecisionRequest:
 @pytest.mark.parametrize(
     ("rating", "expected"),
     [
-        ("Buy", 0.35),
-        ("Overweight", 0.2625),
-        ("Hold", 0.175),
-        ("Underweight", 0.0875),
+        ("Buy", 0.8),
+        ("Overweight", 0.6),
+        ("Hold", 0.4),
+        ("Underweight", 0.2),
         ("Sell", 0.0),
     ],
 )
@@ -98,7 +98,7 @@ def test_rating_policy_has_explicit_directional_bands(rating, expected):
     )
 
     assert decision.target_weight == pytest.approx(expected)
-    assert decision.diversification_cap == pytest.approx(0.35)
+    assert decision.diversification_cap == pytest.approx(0.8)
 
 
 def test_rating_policy_uses_absolute_bands_for_a_cash_account():
@@ -168,12 +168,12 @@ def test_graph_adapter_injects_request_memory_and_restores_graph_state():
 
     assert isinstance(provider, DecisionProvider)
     assert result.status == "SUCCESS"
-    assert result.intent.target_weight == pytest.approx(0.35)
+    assert result.intent.target_weight == pytest.approx(0.8)
     assert result.intent.metadata["rating"] == "Buy"
     assert result.diagnostics["agent_reports"]["final_decision"].startswith("**Rating**")
     assert graph.seen_context.items[0].memory_id == "memory-1"
     assert "Current AAPL position: 200 shares, 20.00% weight" in (graph.seen_portfolio_context)
-    assert "Hold: 17.50%" in graph.seen_portfolio_context
+    assert "Hold: 40.00%" in graph.seen_portfolio_context
     assert graph.memory_provider is original_provider
     assert graph.memory_log is original_log
 
@@ -220,7 +220,7 @@ def test_graph_adapter_accepts_markdown_chinese_label_with_english_rating():
 
     assert result.status == "SUCCESS"
     assert result.intent.metadata["rating"] == "Overweight"
-    assert result.intent.target_weight == pytest.approx(0.2625)
+    assert result.intent.target_weight == pytest.approx(0.6)
 
 
 def test_graph_adapter_turns_hold_into_a_neutral_entry_from_cash():
@@ -245,7 +245,7 @@ def test_graph_adapter_turns_hold_into_a_neutral_entry_from_cash():
     result = TradingAgentsGraphDecisionProvider(HoldGraph()).decide(make_request(current_weight=0))
 
     assert result.status == "SUCCESS"
-    assert result.intent.target_weight == pytest.approx(0.175)
+    assert result.intent.target_weight == pytest.approx(0.4)
     assert result.intent.metadata["allocation"]["current_weight"] == 0
 
 

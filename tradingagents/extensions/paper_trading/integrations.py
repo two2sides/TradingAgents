@@ -26,6 +26,7 @@ from tradingagents.extensions.contracts import (
     TraceEvent,
     TradeIntent,
 )
+from .settings import DEFAULT_MAX_POSITION_WEIGHT
 
 _RATINGS = frozenset(RATINGS_5_TIER)
 _MISSING = object()
@@ -51,11 +52,11 @@ class RatingAllocationPolicy:
     ``Underweight`` means small exposure instead of silently preserving zero.
     """
 
-    max_position_weight: float = 0.35
+    max_position_weight: float = DEFAULT_MAX_POSITION_WEIGHT
     overweight_fraction: float = 0.75
     hold_fraction: float = 0.50
     underweight_fraction: float = 0.25
-    version: str = "rating-allocation-v2-absolute"
+    version: str = "rating-allocation-v3-configurable-cap"
 
     def __post_init__(self) -> None:
         for name, value in (

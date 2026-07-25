@@ -39,6 +39,12 @@ def test_decision_lab_pages_and_builtin_run_render(monkeypatch, tmp_path):
     run_app.run(timeout=30)
     assert not run_app.exception
     assert any(widget.label == "Agent analysts" for widget in run_app.multiselect)
+    position_cap = next(
+        widget
+        for widget in run_app.number_input
+        if widget.label == "Maximum single-symbol position · %"
+    )
+    assert position_cap.value == 80.0
     cadence = next(
         widget
         for widget in run_app.number_input
