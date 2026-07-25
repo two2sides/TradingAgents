@@ -42,7 +42,8 @@ def create_news_analyst(llm):
             get_global_news,
         ]
 
-        provider = state.get("memory_provider")
+        from tradingagents.extensions.memory import get_active_provider
+        provider = get_active_provider()
         if provider:
             from tradingagents.extensions.memory.tools import create_memory_recall_tool
 

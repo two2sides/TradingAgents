@@ -96,12 +96,16 @@ MODEL_OPTIONS: ProviderModeOptions = {
         "quick": [
             ("Claude Sonnet 5 - Best speed and intelligence balance", "claude-sonnet-5"),
             ("Claude Haiku 4.5 - Fastest with near-frontier intelligence", "claude-haiku-4-5"),
+            # Third-party models via Anthropic-compatible API
+            ("DeepSeek V4 Flash - Anthropic protocol", "deepseek-v4-flash"),
         ],
         "deep": [
             ("Claude Fable 5 - Most capable, long-running agents", "claude-fable-5"),
             ("Claude Opus 4.8 - Frontier agentic coding and reasoning", "claude-opus-4-8"),
             ("Claude Sonnet 5 - Near-frontier intelligence at Sonnet cost", "claude-sonnet-5"),
             ("Claude Opus 4.7 - Previous frontier, long-running agents", "claude-opus-4-7"),
+            # Third-party models via Anthropic-compatible API
+            ("DeepSeek V4 Pro 1M - Anthropic protocol", "deepseek-v4-pro[1m]"),
         ],
     },
     "google": {

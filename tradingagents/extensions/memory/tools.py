@@ -97,6 +97,9 @@ def create_memory_recall_tool(provider: Any, symbol: str, trade_date: str, role:
 
         try:
             memory_query = _build_memory_query(symbol, trade_date, role)
+            # Thread the LLM's query text into metadata so the retrieval
+            # pipeline can use it for embedding alongside the role template.
+            memory_query.metadata["llm_query"] = query.strip()
             ctx = provider.retrieve(memory_query)
             formatted = provider.format_context_for_prompt(ctx)
 

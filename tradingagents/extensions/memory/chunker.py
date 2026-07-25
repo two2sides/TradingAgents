@@ -140,12 +140,14 @@ class DecisionChunker:
                 "content": _truncate(thesis, _CHUNK_LIMITS["thesis"]),
             })
 
-        # Market context chunk — the "what did the world look like" snapshot
-        market = _format_market_context(record)
-        if market:
+        # Market context chunk — skip when bars are unavailable (no data = no signal)
+        if record.market_at_decision.bars:
             chunks.append({
                 "type": "market_context",
-                "content": market,
+                "content": _truncate(
+                    _format_market_context(record),
+                    _CHUNK_LIMITS["market_context"],
+                ),
             })
 
         # Portfolio context chunk — pre-decision positioning
@@ -153,7 +155,7 @@ class DecisionChunker:
         if portfolio:
             chunks.append({
                 "type": "portfolio_context",
-                "content": portfolio,
+                "content": _truncate(portfolio, _CHUNK_LIMITS["portfolio_context"]),
             })
 
         # Debate synthesis chunk — Research Manager's investment plan

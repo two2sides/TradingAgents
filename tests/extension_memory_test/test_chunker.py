@@ -66,7 +66,7 @@ class TestDecisionChunker:
         pf = next(c for c in chunks if c["type"] == "portfolio_context")
         assert "Cash:" in pf["content"]
 
-    def test_empty_market_bars_produces_fallback_context(self):
+    def test_empty_market_bars_skips_market_context(self):
         intent = make_trade_intent()
         record = DecisionRecord(
             intent=intent,
@@ -74,8 +74,10 @@ class TestDecisionChunker:
             market_at_decision=MarketSnapshot(symbol="AAPL", as_of=NOW),
         )
         chunks = DecisionChunker.split(record)
-        mkt = next(c for c in chunks if c["type"] == "market_context")
-        assert "No OHLCV data" in mkt["content"]
+        types = {c["type"] for c in chunks}
+        assert "market_context" not in types, (
+            "Empty bars should not produce misleading 'No OHLCV data' chunk"
+        )
 
     def test_thesis_truncated_at_limit(self):
         long_rationale = "buy " * 500  # ~2000 chars

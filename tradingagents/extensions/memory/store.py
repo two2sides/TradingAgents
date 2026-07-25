@@ -131,9 +131,7 @@ class MemoryStore:
                 _KEY_CONFIDENCE: record.intent.confidence,
                 _KEY_SOURCE: source,
                 _KEY_PARENT: parent,
-                "outcome_raw": None,
-                "outcome_alpha": None,
-                "outcome_quality": None,
+                # outcome fields are added later by update_outcome / propagate_outcome
             })
 
         self._collection.add(ids=ids, embeddings=embs, documents=docs,
@@ -153,8 +151,8 @@ class MemoryStore:
         for meta in existing["metadatas"]:
             meta = dict(meta)  # copy — ChromaDB returns immutable dicts
             meta["outcome_raw"] = outcome.holding_period_return
-            meta["outcome_alpha"] = (
-                outcome.holding_period_return  # alpha is computed externally
+            meta["outcome_alpha"] = (outcome.metadata or {}).get(
+                "alpha", outcome.holding_period_return
             )
             meta["outcome_quality"] = quality
             new_metas.append(meta)
@@ -190,9 +188,6 @@ class MemoryStore:
                 _KEY_AVAILABLE_AT: _to_ts(available_at),
                 _KEY_TAGS: agent_tags,
                 _KEY_CONFIDENCE: 0.0,
-                "outcome_raw": None,
-                "outcome_alpha": None,
-                "outcome_quality": None,
             })],
         )
         logger.debug("Appended reflection chunk to %s.", memory_id)
@@ -221,6 +216,44 @@ class MemoryStore:
 
     def count(self) -> int:
         return self._collection.count()
+
+    def find_by_symbol_and_date(self, symbol: str, date_str: str) -> str | None:
+        """Return the memory_id of a PM decision for *symbol* on *date_str*.
+
+        *date_str* is an ISO-format date (``YYYY-MM-DD``).  Returns the
+        first matching memory_id, or None when no match is found.
+        """
+        if self._collection.count() == 0:
+            return None
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            ts_start = dt.timestamp()
+            ts_end = (dt + timedelta(days=1)).timestamp()
+
+            results = self._collection.get(
+                where={
+                    "$and": [
+                        {_KEY_SYMBOL: symbol},
+                        {_KEY_DECISION_AT: {"$gte": ts_start}},
+                        {_KEY_DECISION_AT: {"$lt": ts_end}},
+                    ],
+                },
+                include=["metadatas"],
+                limit=50,
+            )
+        except Exception:
+            return None
+
+        if not results or not results["ids"]:
+            return None
+
+        # Return the first PM-level record (no parent) matching the date
+        for i, meta in enumerate(results["metadatas"]):
+            if not meta.get(_KEY_PARENT):  # PM decision, not intermediate
+                return meta.get(_KEY_MEMORY_ID)
+        return None
 
     def propagate_outcome(
         self, parent_id: str, outcome_raw: float | None, outcome_quality: float | None
@@ -268,7 +301,7 @@ class MemoryStore:
             results = self._collection.query(
                 query_embeddings=[embedding],
                 n_results=3,
-                where={"symbol": symbol},
+                where={_KEY_SYMBOL: symbol},
                 include=["distances"],
             )
         except Exception:

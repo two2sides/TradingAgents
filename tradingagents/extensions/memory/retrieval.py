@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 _TIME_EPSILON = 1.0  # seconds
 
 
-def _parse_ts(raw) -> datetime:
+def _parse_ts(raw) -> datetime | None:
     """Parse a stored timestamp (float Unix epoch or ISO string) into a UTC datetime."""
     if isinstance(raw, (int, float)):
         return datetime.fromtimestamp(raw, tz=timezone.utc)
@@ -92,7 +92,10 @@ def _tag_match(chunk_tags: str, interest_tags: list[str]) -> bool:
     """
     if not interest_tags or interest_tags == ["*"]:
         return True
+    if not chunk_tags:
+        return False
     chunk_set = set(chunk_tags.split("|"))
+    chunk_set.discard("")  # guard against empty-string tag from malformed input
     return bool(chunk_set.intersection(interest_tags))
 
 
@@ -113,6 +116,13 @@ class AgentAwareRetriever:
 
         kwargs = profile.to_retrieval_kwargs(query)
         query_text = kwargs.pop("query_text")
+
+        # When the LLM provides a specific query via the tool, mix it into
+        # the role template so the search captures the LLM's intent.
+        llm_query = (query.metadata or {}).get("llm_query", "")
+        if llm_query:
+            query_text = f"{query_text}\nSpecific pattern: {llm_query}"
+
         query_emb = self._embedder.embed_query(query_text)
 
         # ── Step 1: ANN coarse retrieval ──
@@ -134,7 +144,7 @@ class AgentAwareRetriever:
                 query_embeddings=[query_emb],
                 n_results=min(n_fetch, self._store.count()),
                 where=where,
-                include=["embeddings", "documents", "metadatas", "distances"],
+                include=["documents", "metadatas", "distances"],
             )
         except Exception:
             # ChromaDB may raise if the collection is empty or where-clause
@@ -223,9 +233,11 @@ def _filter_and_score(
         if chunk_types and chunk_type not in chunk_types:
             continue
 
-        # Filter by interest tags
+        # Filter by interest tags.  Chunks whose type is explicitly in the
+        # profile's chunk_types list are always kept — tags augment filtering,
+        # they don't override type preferences.
         tags = meta.get("agent_tags", "")
-        if not _tag_match(tags, interest_tags):
+        if chunk_type not in chunk_types and not _tag_match(tags, interest_tags):
             continue
 
         # Cross-ticker filtering (already applied in ChromaDB where, but double-check)

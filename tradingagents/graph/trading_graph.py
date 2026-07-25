@@ -343,23 +343,30 @@ class TradingAgentsGraph:
                 benchmark_name=benchmark,
             )
 
-            # Enhanced path: also record the outcome via the RAG provider
+            # Enhanced path: also record the outcome via the RAG provider.
+            # Look up the UUID-based memory_id via ChromaDB metadata query
+            # because the markdown log uses (ticker, date) keys.
             if self.memory_provider:
                 try:
-                    from tradingagents.extensions.contracts import (
-                        DecisionOutcome,
-                        MemoryReference,
+                    memory_id = self.memory_provider.store.find_by_symbol_and_date(
+                        ticker, entry["date"],
                     )
-                    from datetime import timezone
-                    self.memory_provider.record_outcome(
-                        MemoryReference(memory_id=f"{ticker}-{entry['date']}"),
-                        DecisionOutcome(
-                            observed_at=datetime.now(timezone.utc),
-                            holding_period_return=raw,
-                            max_adverse_move=None,
-                            portfolio_impact=None,
-                        ),
-                    )
+                    if memory_id:
+                        from tradingagents.extensions.contracts import (
+                            DecisionOutcome,
+                            MemoryReference,
+                        )
+                        from datetime import timezone
+                        self.memory_provider.record_outcome(
+                            MemoryReference(memory_id=memory_id),
+                            DecisionOutcome(
+                                observed_at=datetime.now(timezone.utc),
+                                holding_period_return=raw,
+                                max_adverse_move=None,
+                                portfolio_impact=None,
+                                metadata={"alpha": alpha},
+                            ),
+                        )
                 except Exception:
                     logger.debug(
                         "record_outcome via memory_provider failed for %s/%s",
@@ -378,7 +385,7 @@ class TradingAgentsGraph:
 
     def _retrieve_agent_memories(
         self, ticker: str, trade_date: str
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         """Retrieve role-aware memories for all agents via the RAG provider.
 
         Returns a dict of ``memory_{role}`` → formatted string suitable for
@@ -422,13 +429,6 @@ class TradingAgentsGraph:
                     "Memory retrieval skipped for role=%s ticker=%s",
                     role, ticker, exc_info=True,
                 )
-
-        # Make the provider available to tool-based agents
-        result["memory_provider"] = provider
-
-        # For backward compatibility: also set past_context from PM memory
-        if "memory_portfolio_manager" in result:
-            result["past_context"] = result["memory_portfolio_manager"]
 
         return result
 
@@ -498,26 +498,32 @@ class TradingAgentsGraph:
             if not content or not content.strip():
                 continue
 
-            intent = TradeIntent(
-                decision_id=f"{parent_id}-{source}",
-                symbol=ticker,
-                as_of=trade_dt,
-                target_weight=0.0,
-                confidence=0.0,
-                rationale=content,
-                warnings=[],
-                metadata={"source": source, "parent": parent_id},
-            )
-            record = DecisionRecord(
-                intent=intent,
-                portfolio_before=PortfolioState(
-                    as_of=trade_dt, cash=0, total_equity=0,
-                ),
-                market_at_decision=MarketSnapshot(
-                    symbol=ticker, as_of=trade_dt,
-                ),
-            )
-            self.memory_provider.record_decision(record)
+            try:
+                intent = TradeIntent(
+                    decision_id=f"{parent_id}-{source}",
+                    symbol=ticker,
+                    as_of=trade_dt,
+                    target_weight=0.0,
+                    confidence=0.0,
+                    rationale=content,
+                    warnings=[],
+                    metadata={"source": source, "parent": parent_id},
+                )
+                record = DecisionRecord(
+                    intent=intent,
+                    portfolio_before=PortfolioState(
+                        as_of=trade_dt, cash=0, total_equity=0,
+                    ),
+                    market_at_decision=MarketSnapshot(
+                        symbol=ticker, as_of=trade_dt,
+                    ),
+                )
+                self.memory_provider.record_decision(record)
+            except Exception:
+                logger.debug(
+                    "Intermediate record failed for source=%s ticker=%s",
+                    source, ticker, exc_info=True,
+                )
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
         """Resolve ticker identity once and return the full instrument context.
@@ -609,13 +615,19 @@ class TradingAgentsGraph:
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
 
         # Enhanced memory path: when a provider is injected, retrieve role-aware
-        # memories for PM (and optionally other agents) via RAG.  Results are
-        # formatted as strings so existing agent prompt code needs no changes.
+        # memories for PM (and optionally other agents) via RAG.
         extra_state: dict[str, str] = {}
         if self.memory_provider:
+            from tradingagents.extensions.memory import set_active_provider
+            set_active_provider(self.memory_provider)
             extra_state = self._retrieve_agent_memories(
                 company_name, trade_date
             )
+            # Merge RAG-retrieved PM memory into the existing past_context so it
+            # is passed via the single explicit parameter (not duplicated in extra_state).
+            rag_pm = extra_state.pop("memory_portfolio_manager", "")
+            if rag_pm:
+                past_context = rag_pm + ("\n\n" + past_context if past_context else "")
 
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -669,7 +681,7 @@ class TradingAgentsGraph:
                 pm_id = self._record_decision_via_provider(
                     company_name, trade_date, final_state
                 )
-                if pm_id:
+                if pm_id and pm_id not in ("mem-empty", "mem-dup"):
                     self._record_intermediate_analyses(
                         company_name, trade_date, final_state, pm_id,
                     )

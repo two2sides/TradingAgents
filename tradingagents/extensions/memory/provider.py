@@ -99,7 +99,7 @@ class EnhancedMemoryProvider:
         The agent role is read from ``query.metadata["agent_role"]``, falling
         back to ``"portfolio_manager"`` when absent.
         """
-        role = query.metadata.get("agent_role", "portfolio_manager")
+        role = (query.metadata or {}).get("agent_role", "portfolio_manager")
         profile = get_profile(role)
         logger.debug(
             "Retrieving memories for %s as %s (max %d items).",
@@ -154,23 +154,19 @@ class EnhancedMemoryProvider:
         If an LLM client was provided, generates a reflection before persisting.
         """
         memory_id = reference.memory_id
-        if memory_id == "mem-empty":
+        if memory_id in ("mem-empty", "mem-dup"):
             return
 
         # 1. Update outcome metadata on existing chunks (parent + children)
         self.store.update_outcome(memory_id, outcome)
 
         # Propagate the outcome to all intermediate records linked to this parent
-        raw = outcome.holding_period_return
-        quality = None
-        if raw is not None:
-            if raw > 0.10:        quality = 1.0
-            elif raw > 0.05:      quality = 0.85
-            elif raw > 0.0:       quality = 0.65
-            elif raw > -0.05:     quality = 0.40
-            elif raw > -0.10:     quality = 0.20
-            else:                 quality = 0.10
-        self.store.propagate_outcome(memory_id, raw, quality)
+        from .store import _outcome_quality
+        self.store.propagate_outcome(
+            memory_id,
+            outcome.holding_period_return,
+            _outcome_quality(outcome),
+        )
 
         # 2. Retrieve original record context for reflection generation
         record_ctx = self.store.get_record_context(memory_id)

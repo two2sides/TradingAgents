@@ -120,7 +120,8 @@ def run_debate_turn(
     available_tools = available_debate_tools(already_used)
 
     # Memory recall tool — not counted against the debate tool budget
-    provider = state.get("memory_provider")
+    from tradingagents.extensions.memory import get_active_provider
+    provider = get_active_provider()
     if provider:
         from tradingagents.extensions.memory.tools import create_memory_recall_tool
 
