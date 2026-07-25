@@ -210,20 +210,63 @@ class BacktestRunner(Protocol):
         request: BacktestRequest,
         decision_provider: DecisionProvider,
         memory_provider: MemoryProvider,
+        observer: RunObserver | None = None,
     ) -> BacktestResult:
         ...
 ```
 
 ```python
+class ExecutionConfig:
+    commission_rate: float = 0.0005
+    slippage_rate: float = 0.001
+    minimum_fee: float = 0
+    execution_policy: Literal["NEXT_OPEN"] = "NEXT_OPEN"
+
+class BacktestRequest:
+    symbols: list[str]
+    start: datetime
+    end: datetime
+    initial_cash: float
+    lookback: int
+    decision_interval_bars: int
+    outcome_horizon_bars: int
+    execution: ExecutionConfig
+
 class BacktestResult:
     decisions: list[DecisionEnvelope]
     executions: list[ExecutionReport]
     equity_curve: list[EquityPoint]
+    portfolio_history: list[PortfolioState]
+    benchmark_curves: dict[str, list[EquityPoint]]
     metrics: dict[str, float]
     warnings: list[str]
 ```
 
-WebUI 只消费公共结果对象，不直接访问 Broker、记忆库或 Agent 的内部状态。
+`commission_rate` 和 `slippage_rate` 均为小数比例，例如 `0.001` 表示
+0.1%。第一版只支持 `NEXT_OPEN`，即决策产生后的下一个可交易开盘价成交；以后若增加成交策略，应扩展枚举而不是在实现中静默改变语义。
+
+`decision_interval_bars` 表示两次 Agent 决策之间间隔多少根共同可交易 K 线，默认 5；`outcome_horizon_bars` 表示经过多少根 K 线后将结果反馈给 B，默认也是 5。使用 K 线数量而不是“自然日/周”可以避免节假日语义不一致。
+
+`benchmark_curves` 的键是稳定、可展示的基准名称，例如
+`buy_and_hold`。WebUI 只消费公共结果对象，不直接访问 Broker、记忆库或
+Agent 的内部状态。`portfolio_history` 用于回放每个估值时点的现金、持仓、成本和权重，不要求 WebUI 重新推导账户状态。
+
+长回测可选传入进度观察者：
+
+```python
+class RunEvent:
+    timestamp: datetime
+    stage: str
+    message: str
+    progress: float | None  # 0 到 1
+    payload: dict[str, Any]
+
+class RunObserver(Protocol):
+    def on_event(self, event: RunEvent) -> None:
+        ...
+```
+
+观察者只接收事件，不控制回测流程；CLI、测试和 WebUI 可以分别提供自己的实现，B、C 不需要依赖 Streamlit。
 
 ## 6. B 提供的公共接口
 
@@ -402,6 +445,7 @@ tradingagents/extensions/
 
 ```python
 from tradingagents.extensions.contracts import (
+    BacktestRequest,
     DecisionEnvelope,
     DecisionRequest,
     ExecutionReport,
@@ -410,9 +454,11 @@ from tradingagents.extensions.contracts import (
     TradeIntent,
 )
 from tradingagents.extensions.protocols import (
+    BacktestRunner,
     Broker,
     DecisionProvider,
     MemoryProvider,
+    RunObserver,
 )
 ```
 
@@ -423,5 +469,9 @@ from tradingagents.extensions.protocols import (
 - B 在 `memory/` 中提供满足 `MemoryProvider` 的对象；
 - C 在 `decision/tools/` 中维护 Market/Sentiment 等 **Analyst Tools**；
   `DecisionProvider` 协议仍保留供日后薄 Policy / Broker 接入，**当前默认图不再挂接 Hybrid 闸门**；
+- A 在 `paper_trading/integrations.py` 提供
+  `TradingAgentsGraphDecisionProvider`，把默认图的最终五级评级通过独立的
+  `RatingAllocationPolicy` 转成公共 `TradeIntent`；这层是集成政策，不属于
+  C 的内部决策实现；
 - WebUI 和集成代码只导入公共契约与协议，不导入 B、C 的内部类；
 - 公共层的契约测试位于 `tests/test_extension_contracts.py`。

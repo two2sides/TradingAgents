@@ -30,6 +30,7 @@ def create_portfolio_manager(llm):
 
     def portfolio_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
+        portfolio_context = state.get("portfolio_context", "")
         run_id = state.get("run_id", "legacy-run")
 
         history = state["risk_debate_state"]["history"]
@@ -51,17 +52,20 @@ def create_portfolio_manager(llm):
 ---
 
 **Rating Scale** (use exactly one):
-- **Buy**: Strong conviction to enter or add to position
-- **Overweight**: Favorable outlook, gradually increase exposure
-- **Hold**: Maintain current position, no action needed
-- **Underweight**: Reduce exposure, take partial profits
-- **Sell**: Exit position or avoid entry
+These are absolute desired exposure tiers, not relative trade verbs.
+- **Buy**: Maximum permitted long exposure
+- **Overweight**: High long exposure
+- **Hold**: Neutral long exposure; this may open a position from cash
+- **Underweight**: Small defensive long exposure; this may open a small position from cash
+- **Sell**: Zero exposure
 
 **Output requirement (mandatory):** The first content line of your answer MUST be exactly:
 `**Rating**: <Buy|Overweight|Hold|Underweight|Sell>`
 Use the English rating token even if the rest of the narrative is in another language.
 
 **Context:**
+- Actual account and executable allocation bands:
+{portfolio_context or "- Not supplied; use the rating scale without assuming an existing position."}
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
 {lessons_line}

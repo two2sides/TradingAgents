@@ -47,11 +47,11 @@ def create_research_manager(llm):
 ---
 
 **Rating Scale** (use exactly one):
-- **Buy**: Strong conviction in the bull thesis; recommend taking or growing the position
-- **Overweight**: Constructive view; recommend gradually increasing exposure
-- **Hold**: Balanced view; recommend maintaining the current position
-- **Underweight**: Cautious view; recommend trimming exposure
-- **Sell**: Strong conviction in the bear thesis; recommend exiting or avoiding the position
+- **Buy**: Strongest bullish conviction; maximum permitted exposure
+- **Overweight**: Constructive view; high exposure
+- **Hold**: Genuinely balanced view; neutral exposure
+- **Underweight**: Cautious view; small defensive exposure
+- **Sell**: Strong bearish conviction; zero exposure
 
 Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.
 
@@ -66,7 +66,7 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 Populate accepted_claim_ids, rejected_claim_ids, and unresolved_claim_ids using
 only IDs shown above. Preserve unresolved minority evidence instead of forcing
-false consensus.""" + get_language_instruction()
+false consensus.""" + NO_EXTERNAL_TOOLS + get_language_instruction()
 
         invocation = invoke_structured_with_metadata(
             structured_llm,

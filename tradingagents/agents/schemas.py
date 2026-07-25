@@ -245,8 +245,9 @@ class PortfolioDecision(BaseModel):
 
     rating: PortfolioRating = Field(
         description=(
-            "The final position rating. Exactly one of Buy / Overweight / Hold / "
-            "Underweight / Sell, picked based on the analysts' debate."
+            "The final absolute exposure tier. Exactly one of Buy / Overweight / "
+            "Hold / Underweight / Sell, picked based on the analysts' debate and "
+            "the supplied portfolio state."
         ),
     )
     executive_summary: str = Field(

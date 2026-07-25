@@ -98,9 +98,13 @@ def fetch_yahoo_chart_ohlcv(
     df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
 
     if start_date:
-        df = df[df["Date"] >= pd.Timestamp(start_date)]
+        start_day = pd.Timestamp(start_date).date()
+        df = df[df["Date"].dt.date >= start_day]
     if end_date:
-        df = df[df["Date"] <= pd.Timestamp(end_date)]
+        # Yahoo daily timestamps carry the market-open time. Comparing them
+        # with midnight would silently drop the requested end date.
+        end_day = pd.Timestamp(end_date).date()
+        df = df[df["Date"].dt.date <= end_day]
 
     if df.empty:
         raise NoMarketDataError(

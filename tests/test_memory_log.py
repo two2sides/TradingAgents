@@ -59,11 +59,12 @@ def _price_df(prices):
     return pd.DataFrame({"Close": prices})
 
 
-def _make_pm_state(past_context=""):
+def _make_pm_state(past_context="", portfolio_context=""):
     """Minimal AgentState dict for portfolio_manager_node."""
     return {
         "company_of_interest": "NVDA",
         "past_context": past_context,
+        "portfolio_context": portfolio_context,
         "risk_debate_state": {
             "history": "Risk debate history.",
             "aggressive_history": "",
@@ -686,6 +687,7 @@ class TestPortfolioManagerInjection:
         propagator = Propagator()
         state = propagator.create_initial_state("NVDA", "2026-01-10")
         assert state["past_context"] == ""
+        assert state["portfolio_context"] == ""
 
     # PM prompt
 
@@ -706,6 +708,55 @@ class TestPortfolioManagerInjection:
         state = _make_pm_state(past_context="")
         pm_node(state)
         assert "Lessons from prior decisions" not in captured["prompt"]
+
+    def test_graph_consumes_rag_past_context_alias_once(self):
+        """RAG PM memory merges safely without duplicate keyword arguments."""
+        graph = MagicMock()
+        graph.memory_provider = MagicMock()
+        graph.memory_log.get_past_context.return_value = "legacy markdown context"
+        graph._retrieve_agent_memories.return_value = {
+            "memory_portfolio_manager": "enhanced RAG context",
+            "past_context": "enhanced RAG context",
+            "memory_provider": graph.memory_provider,
+        }
+        graph.resolve_instrument_context.return_value = "AAPL | Apple Inc."
+        graph.propagator.create_initial_state.return_value = {"initial": True}
+        graph.propagator.get_graph_args.return_value = {}
+        graph.config = {"checkpoint_enabled": False}
+        graph.debug = False
+        graph.graph.invoke.return_value = {
+            "final_trade_decision": "Rating: Hold",
+        }
+        graph.process_signal.return_value = "Hold"
+
+        final_state, signal = TradingAgentsGraph._run_graph(
+            graph,
+            "AAPL",
+            "2026-07-01",
+        )
+
+        kwargs = graph.propagator.create_initial_state.call_args.kwargs
+        assert kwargs["past_context"] == (
+            "enhanced RAG context\n\nlegacy markdown context"
+        )
+        assert "memory_portfolio_manager" not in kwargs
+        assert kwargs["memory_provider"] is graph.memory_provider
+        assert final_state["final_trade_decision"] == "Rating: Hold"
+        assert signal == "Hold"
+
+    def test_pm_prompt_includes_ground_truth_portfolio_context(self):
+        captured = {}
+        llm = _structured_pm_llm(captured)
+        pm_node = create_portfolio_manager(llm)
+        state = _make_pm_state(
+            portfolio_context=("Current NVDA position: 0 shares, 0.00% weight\nHold: 17.50%")
+        )
+
+        pm_node(state)
+
+        assert "Actual account and executable allocation bands" in captured["prompt"]
+        assert "Current NVDA position: 0 shares, 0.00% weight" in captured["prompt"]
+        assert "Hold: 17.50%" in captured["prompt"]
 
     def test_pm_returns_rendered_markdown_with_rating(self):
         """The structured PortfolioDecision is rendered to markdown that

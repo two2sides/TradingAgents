@@ -1,0 +1,468 @@
+"""Create and execute a historical experiment."""
+
+from __future__ import annotations
+
+import logging
+import math
+from collections import Counter
+from datetime import date, datetime, time, timedelta, timezone
+
+import streamlit as st
+
+from tradingagents.extensions.contracts import BacktestRequest, ExecutionConfig
+from tradingagents.extensions.paper_trading import (
+    BacktestApplicationService,
+    DEFAULT_MAX_POSITION_WEIGHT,
+    DemoMemoryProvider,
+    HistoricalMarketDataProvider,
+    InsufficientMarketBars,
+    MarketDataRateLimited,
+    MovingAverageDecisionProvider,
+    generate_demo_market_data,
+    validate_backtest_calendar,
+)
+from webui.components.progress import StreamlitProgressObserver
+from webui.components.style import (
+    format_money,
+    format_percent,
+    render_badges,
+    render_callout,
+    render_hero,
+    render_metric_grid,
+    render_section,
+)
+from webui.state import get_agent_runtime, get_run_store, select_run
+
+logger = logging.getLogger(__name__)
+
+DEMO_MODE = "Fast demo"
+AGENT_MODE = "TradingAgents + RAG"
+ANALYST_OPTIONS = {
+    "Market": "market",
+    "Social": "social",
+    "News": "news",
+    "Fundamentals": "fundamentals",
+}
+
+
+def _run_error_details(exc: Exception, *, real_mode: bool) -> tuple[str, str | None]:
+    """Return a precise user-facing error and an optional next action."""
+
+    message = str(exc).strip() or type(exc).__name__
+    if isinstance(exc, InsufficientMarketBars):
+        available = (
+            "、".join(timestamp.date().isoformat() for timestamp in exc.available_bars)
+            if exc.available_bars
+            else "无"
+        )
+        return (
+            f"回测区间内共同交易日不足：找到 {len(exc.available_bars)} 个（{available}）。",
+            "NEXT_OPEN 执行至少需要两个共同交易日。请把结束日期延后，"
+            "并注意周末和休市日不产生 K 线。",
+        )
+    if isinstance(exc, MarketDataRateLimited):
+        return (
+            f"行情服务限流：{message}",
+            "稍后重试，或把 Market source 改为 Built-in execution sandbox。",
+        )
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        missing = getattr(exc, "name", None)
+        package = f" `{missing}`" if missing else ""
+        return (
+            f"运行依赖缺失{package}：{message}",
+            "执行 `uv sync --extra dev --extra webui --extra memory` 后重启 WebUI。",
+        )
+    if real_mode and (
+        "rate limit" in message.lower()
+        or "rate limited" in message.lower()
+        or "too many requests" in message.lower()
+        or "429" in message
+    ):
+        return (
+            f"模型或外部数据服务限流：{message}",
+            "等待服务配额恢复后重试；已经完成的运行档案不会受影响。",
+        )
+    return f"回测未完成：{message}", None
+
+
+@st.cache_resource(show_spinner=False, ttl="6h", max_entries=32)
+def _load_yahoo_chart(
+    symbols: tuple[str, ...],
+    start_iso: str,
+    end_iso: str,
+) -> HistoricalMarketDataProvider:
+    return HistoricalMarketDataProvider.from_yahoo_chart(
+        symbols,
+        datetime.fromisoformat(start_iso),
+        datetime.fromisoformat(end_iso),
+    )
+
+
+def _as_day_start(value: date) -> datetime:
+    return datetime.combine(value, time.min, tzinfo=timezone.utc)
+
+
+def _as_day_end(value: date) -> datetime:
+    return datetime.combine(value, time.max, tzinfo=timezone.utc)
+
+
+def _no_trade_explanation(result) -> str | None:
+    """Explain a zero-fill run instead of leaving a flat equity line ambiguous."""
+
+    if result.metrics.get("fill_count", 0) or not result.decisions:
+        return None
+    ratings = Counter(
+        str(item.intent.metadata.get("rating") or "unrated") for item in result.decisions
+    )
+    rating_text = "、".join(f"{name} × {count}" for name, count in ratings.items())
+    targets = [item.intent.target_weight for item in result.decisions]
+    execution_statuses = Counter(item.status for item in result.executions)
+    status_text = "、".join(f"{name} × {count}" for name, count in execution_statuses.items())
+    if all(target <= 1e-9 for target in targets):
+        reason = "所有决策都要求 0% 目标仓位，因此空仓账户没有产生买单"
+    elif execution_statuses.get("REJECTED"):
+        reason = "Agent 给出了非零目标仓位，但 Broker 拒绝了至少一次执行"
+    else:
+        reason = "目标仓位与整数股执行后的现有仓位一致，因此没有新增成交"
+    return (
+        f"{reason}。决策评级：{rating_text or '无'}；"
+        f"执行状态：{status_text or '无'}。可在 Decision Replay 查看逐日目标与原因。"
+    )
+
+
+def render() -> None:
+    render_hero(
+        "EXPERIMENT CONTROL",
+        "Run a time-safe replay",
+        "配置一次可复现的历史实验；Agent 决策、执行报价和账户变化都会进入审计档案。",
+        accent="TWO ENGINES",
+    )
+    engine = st.segmented_control(
+        "Decision engine",
+        [DEMO_MODE, AGENT_MODE],
+        default=DEMO_MODE,
+        required=True,
+        key="decision-engine",
+        width="stretch",
+        persist_state="page",
+    )
+    real_mode = engine == AGENT_MODE
+    if real_mode:
+        render_badges(
+            [
+                ("TRADINGAGENTS GRAPH", "cyan"),
+                ("ENHANCED RAG MEMORY", "green"),
+                ("NEXT OPEN EXECUTION", "amber"),
+            ]
+        )
+        render_callout(
+            "Real provider path",
+            "每个决策点都会运行完整多 Agent 图。B 的记忆先由回测器按历史时点检索，再以只读上下文注入图；最终评级通过显式仓位策略交给 Broker。",
+            tone="cyan",
+        )
+    else:
+        render_badges(
+            [
+                ("NEXT OPEN EXECUTION", "cyan"),
+                ("LONG ONLY", "amber"),
+                ("DETERMINISTIC DEMO", "green"),
+            ]
+        )
+        render_callout(
+            "Fast, offline baseline",
+            "演示引擎使用确定性行情、内存记忆和可解释均线策略，适合快速展示执行、审计与 What-if；它不会调用 LLM。",
+            tone="amber",
+        )
+
+    today = date.today()
+    default_start = today - timedelta(days=21 if real_mode else 150)
+    render_section("Experiment specification", "费用和滑点均会进入真实成交与账户账本。", index="01")
+    with st.form("backtest-request", border=True):
+        top = st.columns([1.5, 1, 1])
+        with top[0]:
+            symbols_text = st.text_input(
+                "Symbols", value="AAPL", help="逗号分隔，建议演示时 1–3 个。"
+            )
+        with top[1]:
+            start_date = st.date_input("Start", value=default_start, max_value=today)
+        with top[2]:
+            end_date = st.date_input(
+                "End",
+                value=today,
+                max_value=today,
+                help="NEXT_OPEN 至少需要两个共同交易日；周末和休市日不计入。",
+            )
+
+        middle = st.columns(4)
+        with middle[0]:
+            initial_cash = st.number_input(
+                "Initial cash", min_value=1_000.0, value=100_000.0, step=5_000.0
+            )
+        with middle[1]:
+            decision_interval = st.number_input(
+                "Decision cadence · trading bars",
+                min_value=1,
+                max_value=60,
+                value=1,
+                key=f"decision-interval-{engine}",
+                help=(
+                    "1 表示每个交易日收盘决策、下一交易日开盘执行。"
+                    "大于 1 只适用于明确的低频策略；真实 Agent 模式每个决策日"
+                    "都会运行一次完整多 Agent 图。"
+                ),
+            )
+        with middle[2]:
+            lookback = st.number_input(
+                "Context lookback · bars", min_value=8, max_value=250, value=60
+            )
+        with middle[3]:
+            outcome_horizon = st.number_input(
+                "Outcome horizon · bars", min_value=1, max_value=60, value=5
+            )
+
+        costs = st.columns(4)
+        with costs[0]:
+            commission_percent = st.number_input(
+                "Commission · %", min_value=0.0, max_value=5.0, value=0.05, step=0.01
+            )
+        with costs[1]:
+            slippage_bps = st.number_input(
+                "Slippage · bps", min_value=0.0, max_value=500.0, value=10.0, step=1.0
+            )
+        with costs[2]:
+            minimum_fee = st.number_input("Minimum fee", min_value=0.0, value=0.0, step=0.5)
+        with costs[3]:
+            source = st.selectbox(
+                "Market source",
+                ["Yahoo Chart · cached", "Built-in execution sandbox"]
+                if real_mode
+                else ["Built-in deterministic demo", "Yahoo Chart · cached"],
+                help=(
+                    "Yahoo Chart 走项目统一的直连 JSON 与磁盘缓存，不使用行情 Key。"
+                    "Sandbox 使用确定性执行行情，适合在外部服务不可用时验证 Agent、"
+                    "记忆和 Broker；它不代表真实历史价格。"
+                    if real_mode
+                    else "Yahoo Chart 走项目统一的直连 JSON 与磁盘缓存，不使用行情 Key。"
+                ),
+            )
+
+        selected_analyst_labels: list[str] = []
+        max_position_percent = DEFAULT_MAX_POSITION_WEIGHT * 100
+        if real_mode:
+            agent_columns = st.columns([2, 1])
+            with agent_columns[0]:
+                selected_analyst_labels = st.multiselect(
+                    "Agent analysts",
+                    list(ANALYST_OPTIONS),
+                    default=["Market"],
+                    help="每个被选中的分析师都会参与每个决策点的完整图运行。",
+                )
+            with agent_columns[1]:
+                max_position_percent = st.number_input(
+                    "Maximum single-symbol position · %",
+                    min_value=1.0,
+                    max_value=100.0,
+                    value=DEFAULT_MAX_POSITION_WEIGHT * 100,
+                    step=5.0,
+                    help=(
+                        "默认 80%。单标的五档目标为 Buy=80%、Overweight=60%、"
+                        "Hold=40%、Underweight=20%、Sell=0%。修改上限后五档会"
+                        "同比缩放；多标的还会应用 1/N 分散上限。"
+                    ),
+                )
+
+        label = st.text_input("Run label", value="Decision Lab experiment")
+        submitted = st.form_submit_button(
+            "Launch historical replay", type="primary", width="stretch"
+        )
+
+    if not submitted:
+        render_section("Execution contract", "提交后页面将实时显示事件流水线。", index="02")
+        st.code(
+            "T close snapshot → MemoryProvider → DecisionProvider\n"
+            "→ T+1 common-bar open quote → LedgerBroker → mark-to-market",
+            language=None,
+        )
+        if real_mode:
+            st.caption(
+                "默认按每个交易日决策。真实模式每天都会运行完整多 Agent 图，"
+                "因此长窗口可能需要较长时间并产生较多模型请求；若主动改成低频，"
+                "页面会把它视为策略设定，而不是普通日频回测。"
+            )
+        return
+
+    symbols = tuple(
+        dict.fromkeys(item.strip().upper() for item in symbols_text.split(",") if item.strip())
+    )
+    if not symbols:
+        st.error("请至少输入一个股票代码。")
+        return
+    if len(symbols) > 5:
+        st.error("一周版本最多同时回放 5 个标的。")
+        return
+    if real_mode and not selected_analyst_labels:
+        st.error("真实 Agent 模式至少选择一个分析师。")
+        return
+    start_at, end_at = _as_day_start(start_date), _as_day_end(end_date)
+    if start_at >= end_at:
+        st.error("结束日期必须晚于开始日期。")
+        return
+
+    estimated_bars = max(1, math.ceil((end_at - start_at).days * 5 / 7))
+    estimated_agent_calls = math.ceil(estimated_bars / int(decision_interval)) * len(symbols)
+    if real_mode:
+        logger.info(
+            "Agent replay requested symbols=%s estimated_bars=%d "
+            "decision_interval=%d estimated_graph_calls=%d",
+            ",".join(symbols),
+            estimated_bars,
+            int(decision_interval),
+            estimated_agent_calls,
+        )
+
+    analyst_ids = tuple(ANALYST_OPTIONS[label] for label in selected_analyst_labels)
+    request = BacktestRequest(
+        symbols=list(symbols),
+        start=start_at,
+        end=end_at,
+        initial_cash=initial_cash,
+        lookback=int(lookback),
+        decision_interval_bars=int(decision_interval),
+        outcome_horizon_bars=int(outcome_horizon),
+        execution=ExecutionConfig(
+            commission_rate=commission_percent / 100,
+            slippage_rate=slippage_bps / 10_000,
+            minimum_fee=minimum_fee,
+        ),
+        metadata={
+            "ui_source": source,
+            "decision_engine": "tradingagents_rag" if real_mode else "deterministic_demo",
+            "selected_analysts": list(analyst_ids),
+            "estimated_agent_calls": estimated_agent_calls if real_mode else 0,
+            "max_position_weight": (
+                max_position_percent / 100 if real_mode else None
+            ),
+        },
+    )
+    fetch_start = start_at - timedelta(days=max(45, int(lookback) * 2))
+    render_section("Live run pipeline", "每条事件同时写入本地运行档案。", index="02")
+    progress = StreamlitProgressObserver()
+    try:
+        if source.startswith("Built-in"):
+            provider = generate_demo_market_data(symbols, fetch_start, end_at)
+        else:
+            with st.spinner("Loading daily bars from Yahoo Chart and the shared cache…"):
+                provider = _load_yahoo_chart(
+                    symbols,
+                    fetch_start.isoformat(),
+                    end_at.isoformat(),
+                )
+        calendar = validate_backtest_calendar(provider, request)
+        logger.info(
+            "Market window ready symbols=%s shared_bars=%d first=%s last=%s",
+            ",".join(symbols),
+            len(calendar),
+            calendar[0].date().isoformat(),
+            calendar[-1].date().isoformat(),
+        )
+        service = BacktestApplicationService(provider, get_run_store())
+        if real_mode:
+            with st.status(
+                "Preparing TradingAgents graph and RAG memory…",
+                expanded=True,
+            ) as runtime_status:
+                runtime_status.write(
+                    "Loading configured LLM clients, persistent Chroma store, "
+                    "and the embedding model."
+                )
+                runtime = get_agent_runtime(
+                    analyst_ids,
+                    max_position_percent / 100,
+                )
+                runtime_status.write(
+                    f"Provider: {runtime.details['llm_provider']} · "
+                    f"quick: {runtime.details['quick_model']} · "
+                    f"deep: {runtime.details['deep_model']}"
+                )
+                runtime_status.write(f"Estimated full graph calls: {estimated_agent_calls}")
+                runtime_status.update(
+                    label="TradingAgents + RAG runtime ready",
+                    state="complete",
+                    expanded=False,
+                )
+            decision_provider = runtime.decision_provider
+            memory_provider = runtime.memory_provider
+        else:
+            decision_provider = MovingAverageDecisionProvider()
+            memory_provider = DemoMemoryProvider()
+        stored = service.run_and_store(
+            request,
+            decision_provider,
+            memory_provider,
+            label=label,
+            observer=progress,
+        )
+    except Exception as exc:
+        log_context = (
+            "Historical experiment rejected"
+            if isinstance(exc, InsufficientMarketBars)
+            else "Historical experiment failed"
+        )
+        log_method = logger.warning if isinstance(exc, InsufficientMarketBars) else logger.exception
+        log_method(
+            "%s engine=%s symbols=%s source=%s error=%s",
+            log_context,
+            "tradingagents_rag" if real_mode else "deterministic_demo",
+            ",".join(symbols),
+            source,
+            exc,
+        )
+        message, action = _run_error_details(exc, real_mode=real_mode)
+        st.error(message)
+        if action:
+            st.info(action, icon=":material/lightbulb:")
+        return
+
+    select_run(stored.run_id)
+    result = stored.result
+    if result is None:
+        st.error("运行已保存，但缺少结果对象。")
+        return
+    st.success(f"运行已归档：{stored.run_id[:12]}")
+    render_metric_grid(
+        [
+            {
+                "label": "Final equity",
+                "value": format_money(result.metrics.get("final_equity")),
+                "tone": "cyan",
+            },
+            {
+                "label": "Total return",
+                "value": format_percent(result.metrics.get("total_return"), signed=True),
+                "tone": "positive" if result.metrics.get("total_return", 0) >= 0 else "negative",
+            },
+            {
+                "label": "Max drawdown",
+                "value": format_percent(result.metrics.get("max_drawdown")),
+                "tone": "negative",
+            },
+            {
+                "label": "Decisions",
+                "value": len(result.decisions),
+                "tone": "neutral",
+            },
+            {"label": "Trades", "value": int(result.metrics.get("fill_count", 0)), "tone": "amber"},
+            {
+                "label": "Fees",
+                "value": format_money(result.metrics.get("total_fees")),
+                "tone": "neutral",
+            },
+        ]
+    )
+    no_trade_reason = _no_trade_explanation(result)
+    if no_trade_reason:
+        st.warning(no_trade_reason, icon=":material/info:")
+    st.info("结果已设为当前运行。请从左侧进入 Decision Replay 查看交易点和完整证据链。")
+
+
+__all__ = ["render"]
