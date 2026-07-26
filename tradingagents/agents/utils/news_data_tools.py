@@ -2,6 +2,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.interface import route_to_vendor
 
 
@@ -43,6 +44,14 @@ def get_global_news(
     Returns:
         str: A formatted string containing global news data
     """
+    # Resolve optional tool args here so every vendor receives concrete ints.
+    # LangChain/LLM calls often omit optional fields as ``None``, which must not
+    # reach arithmetic like ``limit // n`` in google_news.
+    config = get_config()
+    if look_back_days is None:
+        look_back_days = config["global_news_lookback_days"]
+    if limit is None:
+        limit = config["global_news_article_limit"]
     return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
 
 @tool

@@ -102,7 +102,10 @@ def test_portfolio_manager_prompt_states_constraint():
         "investment_plan": "plan",
         "trader_investment_plan": "trader plan",
     })
-    assert NO_EXTERNAL_TOOLS in _prompt_text(captured["prompt"])
+    text = _prompt_text(captured["prompt"])
+    assert NO_EXTERNAL_TOOLS in text
+    assert "Set the structured `rating` field" in text
+    assert "first content line" not in text
 
 
 @pytest.mark.unit
@@ -110,8 +113,6 @@ def test_sentiment_prompt_states_constraint(monkeypatch):
     from tradingagents.agents.schemas import SentimentBand, SentimentReport
 
     # Pre-fetched sources are stubbed so the prompt builds without network I/O.
-    monkeypatch.setattr(sentiment, "fetch_stocktwits_messages", lambda *a, **k: "st")
-    monkeypatch.setattr(sentiment, "fetch_reddit_posts", lambda *a, **k: "rd")
     monkeypatch.setattr(sentiment.get_news, "func", lambda *a, **k: "news", raising=False)
 
     captured = {}

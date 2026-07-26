@@ -20,7 +20,9 @@ RunStatus = Literal["RUNNING", "COMPLETED", "FAILED"]
 
 
 def default_store_path() -> Path:
-    return Path.home() / ".tradingagents" / "paper_trading" / "runs.sqlite3"
+    # Repo-local default: TradingAgents/local_data/runs.sqlite3
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root / "local_data" / "runs.sqlite3"
 
 
 def utc_now() -> datetime:

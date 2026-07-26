@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import tradingagents.extensions.paper_trading.integrations as integration_module
 from tradingagents.extensions.contracts import (
     DecisionRequest,
     MarketBar,
@@ -171,11 +172,50 @@ def test_graph_adapter_injects_request_memory_and_restores_graph_state():
     assert result.intent.target_weight == pytest.approx(0.8)
     assert result.intent.metadata["rating"] == "Buy"
     assert result.diagnostics["agent_reports"]["final_decision"].startswith("**Rating**")
+    assert result.diagnostics["audit_profile"]["status"] == "AUDIT_DEGRADED"
+    assert result.diagnostics["audit_advisory_only"] is True
+    assert result.diagnostics["memory_provenance"][0]["memory_id"] == "memory-1"
+    assert any(
+        event.event_type == "CREDIBILITY_PROFILED" for event in result.trace
+    )
     assert graph.seen_context.items[0].memory_id == "memory-1"
     assert "Current AAPL position: 200 shares, 20.00% weight" in (graph.seen_portfolio_context)
     assert "Hold: 40.00%" in graph.seen_portfolio_context
     assert graph.memory_provider is original_provider
     assert graph.memory_log is original_log
+
+
+def test_credibility_projection_failure_never_blocks_trade(monkeypatch):
+    class HealthyGraph:
+        def propagate(
+            self,
+            symbol,
+            trade_date,
+            asset_type="stock",
+            portfolio_context="",
+        ):
+            return (
+                {
+                    "run_id": "graph-run-audit-error",
+                    "trade_date": trade_date,
+                    "final_trade_decision": "**Rating**: Buy",
+                },
+                "Buy",
+            )
+
+    def broken_verifier(_state):
+        raise RuntimeError("audit-only failure")
+
+    monkeypatch.setattr(integration_module, "run_verifier", broken_verifier)
+
+    result = TradingAgentsGraphDecisionProvider(HealthyGraph()).decide(make_request())
+
+    assert result.status == "SUCCESS"
+    assert result.intent.metadata["rating"] == "Buy"
+    assert result.intent.target_weight == pytest.approx(0.8)
+    assert result.diagnostics["audit_profile"] is None
+    assert "audit-only failure" in result.diagnostics["audit_error"]
+    assert result.diagnostics["audit_advisory_only"] is True
 
 
 def test_graph_adapter_fails_safe_when_rating_is_not_explicit():

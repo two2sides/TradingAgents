@@ -8,6 +8,7 @@ the other implementation.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -15,6 +16,8 @@ from threading import RLock
 from typing import Any
 
 from tradingagents.agents.utils.rating import RATINGS_5_TIER, parse_rating_strict
+from tradingagents.extensions.decision.credibility.profile import build_audit_profile
+from tradingagents.extensions.decision.credibility.verifier import run_verifier
 from tradingagents.extensions.contracts import (
     DecisionEnvelope,
     DecisionOutcome,
@@ -30,6 +33,7 @@ from .settings import DEFAULT_MAX_POSITION_WEIGHT
 
 _RATINGS = frozenset(RATINGS_5_TIER)
 _MISSING = object()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,7 +298,13 @@ class TradingAgentsGraphDecisionProvider:
             return self._failed_safe(
                 request,
                 f"Portfolio Manager rating was not explicit: {parsed.error}",
-                diagnostics=self._diagnostics(final_state, graph_signal, None, parsed.source),
+                diagnostics=self._diagnostics(
+                    final_state,
+                    graph_signal,
+                    None,
+                    parsed.source,
+                    memory=request.memory,
+                ),
             )
 
         allocation = self.policy.resolve(
@@ -332,34 +342,56 @@ class TradingAgentsGraphDecisionProvider:
                 "portfolio_context_version": "absolute-allocation-v1",
             },
         )
+        diagnostics = self._diagnostics(
+            final_state,
+            graph_signal,
+            parsed.parsed,
+            parsed.source,
+            memory=request.memory,
+        )
+        trace = [
+            TraceEvent(
+                timestamp=request.as_of,
+                source="TradingAgentsGraphDecisionProvider",
+                event_type="MEMORY_CONTEXT_INJECTED",
+                summary=f"Injected {len(request.memory.items)} time-safe memory items",
+                payload={"memory_items": len(request.memory.items)},
+            ),
+            TraceEvent(
+                timestamp=request.as_of,
+                source="RatingAllocationPolicy",
+                event_type="RATING_MAPPED",
+                summary=(
+                    f"{parsed.parsed} mapped from {current_weight:.1%} "
+                    f"to {allocation.target_weight:.1%}"
+                ),
+                payload=asdict(allocation),
+            ),
+        ]
+        audit_profile = diagnostics.get("audit_profile")
+        if isinstance(audit_profile, dict):
+            trace.append(
+                TraceEvent(
+                    timestamp=request.as_of,
+                    source="CredibilityVerifier",
+                    event_type="CREDIBILITY_PROFILED",
+                    summary=(
+                        f"{audit_profile.get('status', 'UNKNOWN')} "
+                        f"({audit_profile.get('audit_scope', 'UNKNOWN')})"
+                    ),
+                    payload={
+                        "status": audit_profile.get("status"),
+                        "audit_scope": audit_profile.get("audit_scope"),
+                        "advisory_only": True,
+                        "does_not_change_rating": True,
+                    },
+                )
+            )
         return DecisionEnvelope(
             intent=intent,
             status=status,
-            trace=[
-                TraceEvent(
-                    timestamp=request.as_of,
-                    source="TradingAgentsGraphDecisionProvider",
-                    event_type="MEMORY_CONTEXT_INJECTED",
-                    summary=f"Injected {len(request.memory.items)} time-safe memory items",
-                    payload={"memory_items": len(request.memory.items)},
-                ),
-                TraceEvent(
-                    timestamp=request.as_of,
-                    source="RatingAllocationPolicy",
-                    event_type="RATING_MAPPED",
-                    summary=(
-                        f"{parsed.parsed} mapped from {current_weight:.1%} "
-                        f"to {allocation.target_weight:.1%}"
-                    ),
-                    payload=asdict(allocation),
-                ),
-            ],
-            diagnostics=self._diagnostics(
-                final_state,
-                graph_signal,
-                parsed.parsed,
-                parsed.source,
-            ),
+            trace=trace,
+            diagnostics=diagnostics,
         )
 
     @contextmanager
@@ -385,8 +417,13 @@ class TradingAgentsGraphDecisionProvider:
         graph_signal: Any,
         rating: str | None,
         parse_source: str,
+        *,
+        memory: MemoryContext | None = None,
     ) -> dict[str, Any]:
-        return {
+        projection = _credibility_projection(final_state)
+        diagnostics = {
+            "run_id": final_state.get("run_id"),
+            "trade_date": final_state.get("trade_date"),
             "graph_signal": str(graph_signal),
             "rating": rating,
             "rating_parse_source": parse_source,
@@ -400,10 +437,29 @@ class TradingAgentsGraphDecisionProvider:
                 "final_decision": str(final_state.get("final_trade_decision") or ""),
             },
             "decision_snapshots": _json_list(final_state.get("decision_snapshots")),
-            "claims": _json_list(final_state.get("claims")),
+            "claims": projection.pop(
+                "audited_claims", _json_list(final_state.get("claims"))
+            ),
             "audit_events": _json_list(final_state.get("audit_events")),
             "structured_invocations": _json_list(final_state.get("structured_invocations")),
+            "debate_turns": _json_list(
+                (final_state.get("investment_debate_state") or {}).get("debate_turns")
+            ),
+            **projection,
         }
+        if memory is not None:
+            diagnostics["memory_provenance"] = [
+                {
+                    "memory_id": item.memory_id,
+                    "symbol": item.symbol,
+                    "decision_at": item.decision_at.isoformat(),
+                    "available_at": item.available_at.isoformat(),
+                    "score": item.score,
+                }
+                for item in memory.items
+            ]
+            diagnostics["memory_context_metadata"] = dict(memory.metadata)
+        return diagnostics
 
     @staticmethod
     def _failed_safe(
@@ -439,6 +495,42 @@ class TradingAgentsGraphDecisionProvider:
             ],
             diagnostics=diagnostics or {"error": message},
         )
+
+
+def _credibility_projection(final_state: dict[str, Any]) -> dict[str, Any]:
+    """Build advisory audit views without ever affecting trade execution."""
+
+    try:
+        events, claims, findings = run_verifier(final_state)
+        profile = build_audit_profile(final_state, events, claims, findings).model_dump(
+            mode="json"
+        )
+    except Exception as exc:
+        logger.warning(
+            "Credibility projection failed; preserving the original trading decision: %s",
+            exc,
+            exc_info=True,
+        )
+        return {
+            "audit_profile": None,
+            "audit_findings": [],
+            "audit_finding_counts": {},
+            "audit_error": f"{type(exc).__name__}: {exc}",
+            "audit_advisory_only": True,
+        }
+
+    finding_counts: dict[str, int] = {}
+    for finding in findings:
+        key = f"{finding.get('severity', 'UNKNOWN')}:{finding.get('code', 'UNKNOWN')}"
+        finding_counts[key] = finding_counts.get(key, 0) + 1
+    return {
+        "audit_profile": profile,
+        "audit_findings": findings,
+        "audit_finding_counts": finding_counts,
+        "audit_error": None,
+        "audit_advisory_only": True,
+        "audited_claims": claims,
+    }
 
 
 def _positive_int(value: Any, *, default: int) -> int:

@@ -41,3 +41,8 @@ redis>=6.2.0
 typer>=0.21.0
 rich>=14.0.0
 questionary>=2.1.0
+
+# --- WebUI / Decision Lab（与 pyproject.toml [project.optional-dependencies].webui 对齐）---
+# 启动: streamlit run webui/app.py
+plotly>=6.0,<7
+streamlit>=1.50,<2

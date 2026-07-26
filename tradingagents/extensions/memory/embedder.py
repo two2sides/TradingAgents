@@ -37,7 +37,7 @@ class LocalEmbeddingBackend:
         except Exception:
             logger.info("Model not cached — downloading from HuggingFace...")
             self._model = SentenceTransformer(model_name)
-        self.dim = self._model.get_embedding_dimension()
+        self.dim = self._model.get_sentence_embedding_dimension()
         logger.info("Embedding model loaded — %d dimensions.", self.dim)
 
     def encode(self, texts: list[str], normalize_embeddings: bool = True) -> list[list[float]]:

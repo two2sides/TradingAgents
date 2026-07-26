@@ -4,8 +4,7 @@ Uses LangChain's ``with_structured_output`` so the LLM produces a typed
 ``PortfolioDecision`` directly, in a single call.  The result is rendered
 back to markdown for storage in ``final_trade_decision`` so memory log,
 CLI display, and saved reports continue to consume the same shape they do
-today.  When a provider does not expose structured output, the agent falls
-back gracefully to free-text generation.
+today. Unvalidated free text is rejected rather than passed downstream.
 """
 
 from __future__ import annotations
@@ -59,9 +58,10 @@ These are absolute desired exposure tiers, not relative trade verbs.
 - **Underweight**: Small defensive long exposure; this may open a small position from cash
 - **Sell**: Zero exposure
 
-**Output requirement (mandatory):** The first content line of your answer MUST be exactly:
-`**Rating**: <Buy|Overweight|Hold|Underweight|Sell>`
-Use the English rating token even if the rest of the narrative is in another language.
+**Decision requirement (mandatory):** Set the structured `rating` field to
+exactly one English token from Buy / Overweight / Hold / Underweight / Sell,
+even if the explanatory fields use another language. Do not emit a Markdown
+rating line; the validated structured object is rendered to Markdown later.
 
 **Context:**
 - Actual account and executable allocation bands:

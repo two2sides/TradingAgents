@@ -8,10 +8,16 @@ from ..models import VerificationFinding, stable_id
 
 
 def check_source_rules(claims: list[dict[str, Any]], events: list[dict[str, Any]]):
+    all_artifacts = {
+        (event.get("payload") or {}).get("artifact_id")
+        for event in events
+        if (event.get("payload") or {}).get("artifact_id")
+    }
     artifacts = {
         (event.get("payload") or {}).get("artifact_id")
         for event in events
         if (event.get("payload") or {}).get("artifact_id")
+        and not (event.get("payload") or {}).get("post_run_recomputed")
     }
     findings = []
     for claim in claims:
@@ -34,20 +40,34 @@ def check_source_rules(claims: list[dict[str, Any]], events: list[dict[str, Any]
             continue
         for ref in refs:
             if ref.get("artifact_id") not in artifacts:
-                code = "MISSING_ARTIFACT"
+                is_post_run = ref.get("artifact_id") in all_artifacts
+                code = (
+                    "POST_RUN_EVIDENCE_REFERENCE"
+                    if is_post_run
+                    else "MISSING_ARTIFACT"
+                )
                 findings.append(
                     VerificationFinding(
                         finding_id=stable_id(
                             "finding",
                             {"rule": code, "claim": claim.get("claim_id"), "ref": ref},
                         ),
-                        rule_id="source.artifact_exists",
+                        rule_id=(
+                            "source.runtime_artifact_required"
+                            if is_post_run
+                            else "source.artifact_exists"
+                        ),
                         code=code,
                         severity="CRITICAL",
                         stage=claim.get("stage", "unknown"),
                         claim_id=claim.get("claim_id"),
                         artifact_id=ref.get("artifact_id"),
-                        message="主张引用的 Artifact 不存在于本次事件流。",
+                        message=(
+                            "主张引用的是保存报告时补算的 Artifact，"
+                            "不能作为运行时正文证据。"
+                            if is_post_run
+                            else "主张引用的 Artifact 不存在于本次事件流。"
+                        ),
                     ).model_dump(mode="json")
                 )
     return findings

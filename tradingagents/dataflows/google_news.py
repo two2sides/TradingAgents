@@ -36,6 +36,20 @@ _DEFAULT_COMPANY_ALIASES = {
 }
 
 
+def _positive_int(value, *, default: int, name: str) -> int:
+    """Coerce tool/config values to a positive int (LLM may omit → ``None``)."""
+    if value is None:
+        return max(1, int(default))
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer, got {value!r}") from exc
+    if parsed < 1:
+        logger.warning("%s=%r is not positive; using %s", name, value, default)
+        return max(1, int(default))
+    return parsed
+
+
 def _strip_html(text: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", text or "")
     return re.sub(r"\s+", " ", unescape(cleaned)).strip()
@@ -141,7 +155,12 @@ def get_news_google(
     cfg = get_config()
     configured_aliases = (cfg.get("news_query_aliases") or {}).get(canonical, [])
     aliases = list(dict.fromkeys([*_DEFAULT_COMPANY_ALIASES.get(canonical, []), *configured_aliases]))
-    max_items = int(cfg.get("company_news_limit", 40))
+    # Prefer company_news_limit; fall back to news_article_limit (the documented knobs).
+    max_items = _positive_int(
+        cfg.get("company_news_limit", cfg.get("news_article_limit")),
+        default=40,
+        name="company_news_limit",
+    )
     queries = [
         f'"{canonical}" stock OR shares OR earnings',
         f'"{canonical}" company results OR guidance OR regulation',
@@ -197,12 +216,27 @@ def get_news_google(
 
 def get_global_news_google(
     curr_date: str,
-    look_back_days: int = 7,
-    limit: int = 25,
+    look_back_days: int | None = None,
+    limit: int | None = None,
 ) -> str:
-    """Broad market news via Google News RSS using configured query themes."""
+    """Broad market news via Google News RSS using configured query themes.
+
+    ``look_back_days`` / ``limit`` may be ``None`` when the LLM omits optional
+    tool args; both fall back to ``global_news_*`` config (same contract as
+    ``get_global_news_yfinance``).
+    """
     datetime.strptime(curr_date, "%Y-%m-%d")
     cfg = get_config()
+    look_back_days = _positive_int(
+        look_back_days,
+        default=cfg.get("global_news_lookback_days") or 7,
+        name="look_back_days",
+    )
+    limit = _positive_int(
+        limit,
+        default=cfg.get("global_news_article_limit") or 25,
+        name="limit",
+    )
     queries = cfg.get("global_news_queries") or [
         "Federal Reserve interest rates inflation",
         "stock market earnings economic outlook",

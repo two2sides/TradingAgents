@@ -17,6 +17,7 @@ from tradingagents.extensions.decision.credibility.models import (
     claim_identity,
     stable_id,
 )
+from tradingagents.extensions.decision.credibility.profile import build_audit_profile
 from tradingagents.extensions.decision.credibility.verifier import run_verifier
 from tradingagents.graph.conditional_logic import ConditionalLogic
 
@@ -97,6 +98,187 @@ def test_numeric_verifier_uses_selector_not_text_search():
     _, claims, findings = run_verifier(state)
     assert claims[0]["verification_status"] == "CONTRADICTED"
     assert any(item["code"] == "NUMERIC_EVIDENCE_MISMATCH" for item in findings)
+
+
+@pytest.mark.unit
+def test_unreadable_numeric_selector_stays_unknown_and_is_not_counted_as_supported():
+    _, event = invoke_evidenced(
+        run_id="run-unknown",
+        producer_node="market",
+        tool_name="returns",
+        arguments={},
+        call=lambda: json.dumps({"windows": {}}),
+    )
+    payload = event["payload"]
+    identity = claim_identity(
+        subject="AAPL",
+        predicate="20d_return",
+        value=5.0,
+        unit="percent",
+        period_start=None,
+        period_end=None,
+        as_of="2026-07-15",
+        text="20-day return is 5%",
+    )
+    claim = ClaimRecord(
+        claim_id=stable_id("claim", identity),
+        identity_key=identity,
+        run_id="run-unknown",
+        agent="Market Analyst",
+        stage="market",
+        text="20-day return is 5%",
+        claim_type="NUMERIC",
+        value=5.0,
+        unit="percent",
+        as_of="2026-07-15",
+        evidence_refs=[
+            ArtifactFieldRef(
+                observation_event_id=payload["event_id"],
+                artifact_id=payload["artifact_id"],
+                selector="/windows/20d/return",
+                schema_name="returns",
+            )
+        ],
+    ).model_dump(mode="json")
+    state = {
+        "run_id": "run-unknown",
+        "trade_date": "2026-07-15",
+        "audit_events": [event],
+        "claims": [claim],
+        "structured_invocations": [],
+        "decision_snapshots": [],
+    }
+
+    events, claims, findings = run_verifier(state)
+    profile = build_audit_profile(state, events, claims, findings)
+
+    assert claims[0]["verification_status"] == "NOT_EVALUATED"
+    assert any(item["code"] == "NUMERIC_EVIDENCE_UNREADABLE" for item in findings)
+    assert profile.numeric_verification_rate is None
+    counts = profile.metric_counts["numeric_verification_rate"]
+    assert counts["eligible_count"] == 1
+    assert counts["supported_count"] == 0
+    assert counts["unknown_count"] == 1
+    assert any("selector" in item for item in profile.advisories)
+
+
+@pytest.mark.unit
+def test_root_selector_is_unspecified_not_unreadable_or_supported():
+    _, event = invoke_evidenced(
+        run_id="run-root",
+        producer_node="market",
+        tool_name="returns",
+        arguments={},
+        call=lambda: json.dumps({"windows": {"20d": {"return": 0.05}}}),
+    )
+    payload = event["payload"]
+    identity = claim_identity(
+        subject="AAPL",
+        predicate="20d_return",
+        value=5.0,
+        unit="percent",
+        period_start=None,
+        period_end=None,
+        as_of="2026-07-15",
+        text="20-day return is 5%",
+    )
+    claim = ClaimRecord(
+        claim_id=stable_id("claim", identity),
+        identity_key=identity,
+        run_id="run-root",
+        agent="Market Analyst",
+        stage="market",
+        text="20-day return is 5%",
+        claim_type="NUMERIC",
+        importance="MAJOR",
+        value=5.0,
+        unit="percent",
+        as_of="2026-07-15",
+        evidence_refs=[
+            ArtifactFieldRef(
+                observation_event_id=payload["event_id"],
+                artifact_id=payload["artifact_id"],
+                selector="/",
+                schema_name="returns",
+            )
+        ],
+    ).model_dump(mode="json")
+    state = {
+        "run_id": "run-root",
+        "trade_date": "2026-07-15",
+        "audit_events": [event],
+        "claims": [claim],
+        "structured_invocations": [],
+        "decision_snapshots": [],
+    }
+
+    events, claims, findings = run_verifier(state)
+    profile = build_audit_profile(state, events, claims, findings)
+
+    assert claims[0]["verification_status"] == "NOT_EVALUATED"
+    assert any(item["code"] == "NUMERIC_SELECTOR_UNSPECIFIED" for item in findings)
+    assert not any(item["code"] == "NUMERIC_EVIDENCE_UNREADABLE" for item in findings)
+    assert not any(item["code"] == "NUMERIC_EVIDENCE_MISMATCH" for item in findings)
+    # Root "/" does not count as locating evidence for numeric claims.
+    assert profile.evidence_coverage == 0.0
+
+
+@pytest.mark.unit
+def test_post_run_recomputed_artifact_cannot_support_runtime_claim():
+    _, event = invoke_evidenced(
+        run_id="run-post",
+        producer_node="report_appendix",
+        tool_name="build_appendix_stats",
+        arguments={"trade_date": "2026-07-15"},
+        call=lambda: {"return": 0.05},
+        post_run_recomputed=True,
+    )
+    payload = event["payload"]
+    identity = claim_identity(
+        subject="AAPL",
+        predicate="return",
+        value=5.0,
+        unit="percent",
+        period_start=None,
+        period_end=None,
+        as_of="2026-07-15",
+        text="Return is 5%",
+    )
+    claim = ClaimRecord(
+        claim_id=stable_id("claim", identity),
+        identity_key=identity,
+        run_id="run-post",
+        agent="Market Analyst",
+        stage="market",
+        text="Return is 5%",
+        claim_type="NUMERIC",
+        value=5.0,
+        unit="percent",
+        evidence_refs=[
+            ArtifactFieldRef(
+                observation_event_id=payload["event_id"],
+                artifact_id=payload["artifact_id"],
+                selector="/return",
+                schema_name="appendix",
+            )
+        ],
+    ).model_dump(mode="json")
+    state = {
+        "run_id": "run-post",
+        "trade_date": "2026-07-15",
+        "audit_events": [event],
+        "claims": [claim],
+        "structured_invocations": [],
+        "decision_snapshots": [],
+    }
+
+    events, claims, findings = run_verifier(state)
+    profile = build_audit_profile(state, events, claims, findings)
+
+    assert claims[0]["verification_status"] == "NOT_EVALUATED"
+    assert any(item["code"] == "POST_RUN_EVIDENCE_REFERENCE" for item in findings)
+    assert profile.status == "AUDIT_FAILED"
+    assert profile.metric_counts["tool_success_rate"]["eligible_count"] == 0
 
 
 @pytest.mark.unit

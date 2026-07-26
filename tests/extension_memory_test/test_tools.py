@@ -2,28 +2,34 @@
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.tools import BaseTool
 
 from tradingagents.extensions.memory.tools import (
     _build_memory_query,
     _ROLE_TOOL_DESCRIPTIONS,
     create_memory_recall_tool,
+    recall_historical_decisions,
 )
+
+
+def _invoke(tool, query: str) -> str:
+    return tool.invoke({"query": query})
 
 
 # ── Tool factory ───────────────────────────────────────────────────────
 
 class TestCreateMemoryRecallTool:
-    def test_returns_callable(self):
+    def test_returns_langchain_tool(self):
         provider = MagicMock()
         provider.retrieve.return_value = MagicMock(items=[])
         provider.format_context_for_prompt.return_value = ""
 
         tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", "market_analyst")
-        assert callable(tool)
+        assert isinstance(tool, BaseTool)
+        assert tool is recall_historical_decisions
 
     def test_tool_has_correct_name(self):
         provider = MagicMock()
@@ -31,16 +37,16 @@ class TestCreateMemoryRecallTool:
         provider.format_context_for_prompt.return_value = ""
 
         tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", "market_analyst")
-        assert tool.__name__ == "recall_historical_decisions"
+        assert tool.name == "recall_historical_decisions"
 
-    def test_tool_has_docstring(self):
+    def test_tool_has_docstring_or_description(self):
         provider = MagicMock()
         provider.retrieve.return_value = MagicMock(items=[])
         provider.format_context_for_prompt.return_value = ""
 
         tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", "market_analyst")
-        assert tool.__doc__ is not None
-        assert len(tool.__doc__) > 50
+        assert tool.description is not None
+        assert len(tool.description) > 50
 
     def test_signature_accepts_query(self):
         provider = MagicMock()
@@ -48,8 +54,7 @@ class TestCreateMemoryRecallTool:
         provider.format_context_for_prompt.return_value = ""
 
         tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", "news_analyst")
-        sig = inspect.signature(tool)
-        assert "query" in sig.parameters
+        assert "query" in tool.args
 
     def test_calls_retrieve_on_invoke(self):
         from tradingagents.extensions.contracts import MemoryContext
@@ -64,7 +69,7 @@ class TestCreateMemoryRecallTool:
         provider.format_context_for_prompt.return_value = "[2026-01-05 | AAPL] Test memory."
 
         tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", "bull_researcher")
-        result = tool("Is this bull thesis reliable?")
+        result = _invoke(tool, "Is this bull thesis reliable?")
 
         provider.retrieve.assert_called_once()
         args = provider.retrieve.call_args[0][0]
@@ -77,7 +82,7 @@ class TestCreateMemoryRecallTool:
         provider = MagicMock()
 
         tool = create_memory_recall_tool(provider, "NVDA", "2026-07-22", "market_analyst")
-        result = tool("")
+        result = _invoke(tool, "")
 
         assert "[Memory]" in result
         provider.retrieve.assert_not_called()
@@ -87,7 +92,7 @@ class TestCreateMemoryRecallTool:
         provider.retrieve.side_effect = RuntimeError("DB down")
 
         tool = create_memory_recall_tool(provider, "NVDA", "2026-07-22", "market_analyst")
-        result = tool("test query")
+        result = _invoke(tool, "test query")
 
         assert "[Memory]" in result
         assert "unavailable" in result.lower() or "temporarily" in result.lower()
@@ -98,7 +103,7 @@ class TestCreateMemoryRecallTool:
         provider.format_context_for_prompt.return_value = ""
 
         tool = create_memory_recall_tool(provider, "MSFT", "2026-07-22", "fundamentals_analyst")
-        result = tool("PE compression similar to 2024")
+        result = _invoke(tool, "PE compression similar to 2024")
 
         assert "No relevant past decisions" in result or "[Memory]" in result
 
@@ -106,6 +111,15 @@ class TestCreateMemoryRecallTool:
         """Descriptions must differ so each agent gets role-appropriate guidance."""
         descs = set(_ROLE_TOOL_DESCRIPTIONS.values())
         assert len(descs) == len(_ROLE_TOOL_DESCRIPTIONS), "All role descriptions must be unique"
+
+    def test_tool_names_join_compatible_with_analysts(self):
+        """Analyst prompts join tool.name; plain functions used to crash here."""
+        provider = MagicMock()
+        provider.retrieve.return_value = MagicMock(items=[])
+        provider.format_context_for_prompt.return_value = ""
+        tool = create_memory_recall_tool(provider, "META", "2024-01-05", "market_analyst")
+        names = ", ".join([tool.name for tool in [tool]])
+        assert names == "recall_historical_decisions"
 
 
 # ── Query construction ─────────────────────────────────────────────────

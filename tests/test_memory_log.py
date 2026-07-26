@@ -780,17 +780,16 @@ class TestPortfolioManagerInjection:
         assert "**Price Target**: 215.0" in md
         assert "**Time Horizon**: 3-6 months" in md
 
-    def test_pm_falls_back_to_freetext_when_structured_unavailable(self):
-        """If a provider does not support with_structured_output, the agent
-        falls back to a plain invoke and returns whatever prose the model
-        produced, so the pipeline never blocks."""
-        plain_response = "**Rating**: Sell\n\nExit ahead of guidance."
+    def test_pm_fails_closed_when_structured_unavailable(self):
+        """Unvalidated prose must never become a portfolio decision."""
+        from tradingagents.agents.utils.structured import StructuredOutputError
+
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
-        llm.invoke.return_value = MagicMock(content=plain_response)
         pm_node = create_portfolio_manager(llm)
-        result = pm_node(_make_pm_state())
-        assert result["final_trade_decision"] == plain_response
+        with pytest.raises(StructuredOutputError, match="unavailable"):
+            pm_node(_make_pm_state())
+        llm.invoke.assert_not_called()
 
     # get_past_context ordering and limits
 
