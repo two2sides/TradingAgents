@@ -126,15 +126,15 @@ class TestToolFactoryIntegration:
         for role in ["market_analyst", "fundamentals_analyst", "news_analyst",
                       "bull_researcher", "bear_researcher"]:
             tool = create_memory_recall_tool(provider, "AAPL", "2026-07-22", role)
-            assert tool.__name__ == "recall_historical_decisions"
+            assert tool.name == "recall_historical_decisions"
             # Invoke once and verify the retrieve call carries the right role
             provider.retrieve.reset_mock()
-            tool("test")
+            tool.invoke({"query": "test"})
             assert provider.retrieve.call_args[0][0].metadata["agent_role"] == role
 
     def test_symbol_passed_through_state(self):
         """The ticker from state['company_of_interest'] must reach retrieve()."""
         provider = _mock_provider()
         tool = create_memory_recall_tool(provider, "MSFT", "2026-07-22", "market_analyst")
-        tool("test query")
+        tool.invoke({"query": "test query"})
         assert provider.retrieve.call_args[0][0].symbol == "MSFT"

@@ -23,7 +23,8 @@ def check_temporal_rules(
             mentioned = date.fromisoformat(str(claim.get("value")))
         except (TypeError, ValueError):
             continue
-        if mentioned > cutoff and claim.get("claim_type") not in {"FORECAST", "OPINION"}:
+        is_forecast_date = str(claim.get("polarity") or "").upper() == "FORECAST"
+        if mentioned > cutoff and not is_forecast_date:
             code = "FUTURE_DATE_MENTION"
             findings.append(
                 VerificationFinding(
@@ -40,6 +41,8 @@ def check_temporal_rules(
             )
     for event in events:
         payload = event.get("payload") or {}
+        if payload.get("post_run_recomputed"):
+            continue
         args = payload.get("arguments_redacted") or {}
         for key in ("end_date", "curr_date", "trade_date", "as_of"):
             raw = args.get(key)

@@ -31,6 +31,7 @@ from tradingagents.extensions.decision.tools.market_bound_tools import (
     detect_volume_anomaly_for_ticker,
 )
 from tradingagents.extensions.decision.credibility import build_audited_tool_node
+from tradingagents.extensions.memory.tools import recall_historical_decisions
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
 from tradingagents.extensions.contracts import (
@@ -219,6 +220,8 @@ class TradingAgentsGraph:
                     analyze_multi_horizon_ohlcv_for_ticker,
                     detect_volume_anomaly_for_ticker,
                     detect_price_gap_for_ticker,
+                    # RAG recall — bound by create_memory_recall_tool context
+                    recall_historical_decisions,
                 ],
                 "tools_market",
             ),
@@ -233,6 +236,7 @@ class TradingAgentsGraph:
                 [
                     get_news,
                     get_global_news,
+                    recall_historical_decisions,
                 ],
                 "tools_news",
             ),
@@ -243,6 +247,7 @@ class TradingAgentsGraph:
                     get_balance_sheet,
                     get_cashflow,
                     get_income_statement,
+                    recall_historical_decisions,
                 ],
                 "tools_fundamentals",
             ),

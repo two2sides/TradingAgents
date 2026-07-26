@@ -55,7 +55,11 @@ def make_observation(
 ) -> dict[str, Any]:
     started_at = started_at or datetime.now(timezone.utc)
     ended_at = datetime.now(timezone.utc)
-    content = str(result or "")
+    content = (
+        json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+        if isinstance(result, (dict, list))
+        else str(result or "")
+    )
     artifact_id = stable_id("artifact", content)
     event_id = stable_id(
         "event",

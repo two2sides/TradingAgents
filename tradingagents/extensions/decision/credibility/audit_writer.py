@@ -51,10 +51,23 @@ def render_credibility_markdown(profile: dict[str, Any], findings: list[dict]) -
         "handoff_explanation_coverage": "交接修改解释覆盖率",
         "debate_novelty_rate": "辩论完整周期新颖率",
     }
+    metric_counts = profile.get("metric_counts") or {}
     for key, label in labels.items():
         value = profile.get(key)
         rendered = "N/A" if value is None else f"{100 * value:.1f}%"
-        lines.append(f"- {label}: **{rendered}**")
+        counts = metric_counts.get(key) or {}
+        detail = ""
+        if isinstance(counts, dict):
+            detail = (
+                f"（通过 {counts.get('supported_count', 0)} / "
+                f"适用 {counts.get('eligible_count', 0)}；"
+                f"排除 {counts.get('excluded_count', 0)}；"
+                f"未知 {counts.get('unknown_count', 0)}）"
+            )
+        lines.append(f"- {label}: **{rendered}** {detail}".rstrip())
+    if profile.get("advisories"):
+        lines.extend(["", "### 改进建议（不改变交易执行）", ""])
+        lines.extend(f"- {item}" for item in profile["advisories"])
     if profile.get("audit_scope_reasons"):
         lines.extend(["", "### 范围限制", ""])
         lines.extend(f"- {reason}" for reason in profile["audit_scope_reasons"])

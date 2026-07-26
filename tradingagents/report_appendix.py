@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from tradingagents.extensions.decision.tools.debate_tools import (
 from tradingagents.extensions.decision.tools.market_snapshot import build_market_snapshot
 from tradingagents.extensions.decision.tools.ohlcv_tools import analyze_multi_horizon_ohlcv
 from tradingagents.extensions.decision.credibility import invoke_evidenced
+from tradingagents.extensions.decision.credibility.evidence import make_observation
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +60,12 @@ def render_appendix_markdown(stats: dict[str, Any], chart_rel_path: str | None) 
     lines = [
         "## VI. 附录 — 确定性统计与图表（供读者自行研判）",
         "",
-        "本节由代码在报告保存时自动生成，**不经过 LLM**。"
-        "数值来自 as-of 安全的 OHLCV / 新闻词典，可与正文交叉核对。",
+        (
+            "本节使用运行期间冻结的统计快照，**不经过 LLM**。"
+            if stats.get("_audit_provenance") == "runtime_snapshot"
+            else "本节由代码在报告保存时补算，**不经过 LLM**。"
+        )
+        + "数值来自 as-of 安全的数据，可与正文交叉核对。",
         "",
         f"- **标的**: `{stats.get('symbol')}` | **分析日**: `{stats.get('trade_date')}`",
         f"- **q_score（统计摘要）**: `{sc.get('q_score', 'n/a')}`",
@@ -192,15 +198,44 @@ def write_report_appendix(
         return None, None
 
     try:
-        stats, event = invoke_evidenced(
-            run_id=final_state.get("run_id", "unknown-run"),
-            producer_node="report_appendix",
-            tool_name="build_appendix_stats",
-            arguments={"ticker": ticker, "trade_date": str(trade_date)},
-            call=lambda: build_appendix_stats(ticker, str(trade_date)),
-            post_run_recomputed=True,
-        )
-        final_state.setdefault("audit_events", []).append(event)
+        frozen_stats = final_state.get("appendix_stats")
+        if isinstance(frozen_stats, dict):
+            stats = copy.deepcopy(frozen_stats)
+            provenance = str(
+                stats.get("_audit_provenance") or "runtime_snapshot"
+            )
+            stats["_audit_provenance"] = provenance
+            has_event = any(
+                (item.get("payload") or {}).get("tool_name") == "build_appendix_stats"
+                and bool((item.get("payload") or {}).get("post_run_recomputed"))
+                == (provenance == "post_run_recomputed")
+                for item in final_state.get("audit_events") or []
+            )
+            if not has_event:
+                final_state.setdefault("audit_events", []).append(
+                    make_observation(
+                        run_id=final_state.get("run_id", "unknown-run"),
+                        producer_node="report_appendix",
+                        tool_name="build_appendix_stats",
+                        arguments={"ticker": ticker, "trade_date": str(trade_date)},
+                        result=stats,
+                        tool_call_id=f"{provenance}-appendix-stats",
+                        post_run_recomputed=provenance == "post_run_recomputed",
+                    )
+                )
+        else:
+            stats, event = invoke_evidenced(
+                run_id=final_state.get("run_id", "unknown-run"),
+                producer_node="report_appendix",
+                tool_name="build_appendix_stats",
+                arguments={"ticker": ticker, "trade_date": str(trade_date)},
+                call=lambda: build_appendix_stats(ticker, str(trade_date)),
+                post_run_recomputed=True,
+            )
+            stats = copy.deepcopy(stats)
+            stats["_audit_provenance"] = "post_run_recomputed"
+            final_state["appendix_stats"] = copy.deepcopy(stats)
+            final_state.setdefault("audit_events", []).append(event)
         appendix_dir = save_path / "appendix"
         chart_rel = render_price_volume_chart(
             ticker, str(trade_date), appendix_dir

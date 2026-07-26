@@ -1,33 +1,37 @@
-"""Shared helpers for invoking an agent with structured output and a graceful fallback.
+"""Shared helpers for strict, provider-aware structured agent output.
 
 The Portfolio Manager, Trader, and Research Manager all follow the same
 canonical pattern:
 
-1. At agent creation, wrap the LLM with ``with_structured_output(Schema)``
-   so the model returns a typed Pydantic instance. If the provider does
-   not support structured output (rare; mostly older Ollama models), the
-   wrap is skipped and the agent uses free-text generation instead.
-2. At invocation, run the structured call and render the result back to
-   markdown. If the structured call itself fails for any reason
-   (malformed JSON from a weak model, transient provider issue), fall
-   back to a plain ``llm.invoke`` so the pipeline never blocks.
+1. At agent creation, bind the provider's reliable structured method. DeepSeek
+   thinking models use JSON mode; providers that can force schema tools keep
+   function calling.
+2. At invocation, validate into the requested Pydantic model and render only
+   validated data back to markdown. A failed attempt gets one structured
+   correction retry. Exhaustion raises ``StructuredOutputError``; free text is
+   never accepted as a decision.
 
-Centralising the pattern here keeps the agent factories small and ensures
-all three agents log the same warnings when fallback fires.
+Centralising the pattern keeps agent factories small and prevents unvalidated
+text from silently weakening downstream decisions and credibility records.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
+from tradingagents.llm_clients.capabilities import get_capabilities
 from tradingagents.extensions.decision.credibility.models import StructuredInvocationResult
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+_MAX_STRUCTURED_ATTEMPTS = 2
 
 # Schema-only structured output binds exactly one tool (the schema itself), so a
 # model that reaches for a search tool emits an unknown tool call and the whole
@@ -40,20 +44,83 @@ NO_EXTERNAL_TOOLS = (
 )
 
 
-def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
-    """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
+class StructuredOutputError(RuntimeError):
+    """Raised when an agent cannot produce a schema-valid result."""
 
-    Logs a warning when the binding fails so the user understands the agent
-    will use free-text generation for every call instead of one-shot fallback.
+
+def _model_name(llm: Any) -> str | None:
+    for attr in ("model_name", "model"):
+        value = getattr(llm, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _append_instruction(prompt: Any, instruction: str) -> Any:
+    """Append an output instruction without mutating the caller's prompt."""
+    if isinstance(prompt, str):
+        return f"{prompt.rstrip()}\n\n{instruction}"
+    if isinstance(prompt, list):
+        return [*prompt, HumanMessage(content=instruction)]
+    if hasattr(prompt, "to_messages"):
+        return [*prompt.to_messages(), HumanMessage(content=instruction)]
+    return f"{prompt}\n\n{instruction}"
+
+
+def _json_schema_instruction(schema: type[BaseModel]) -> str:
+    schema_json = json.dumps(
+        schema.model_json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return (
+        "OUTPUT CONTRACT (mandatory): Return exactly one valid JSON object and "
+        "nothing else. Do not use Markdown, code fences, commentary, or tool calls. "
+        "The object must validate against the JSON Schema below. Include every "
+        "required field; use null or an empty list only where the schema permits it.\n"
+        f"JSON Schema:\n{schema_json}"
+    )
+
+
+@dataclass(frozen=True)
+class StructuredBinding:
+    """Provider-aware structured runnable plus its schema contract."""
+
+    runnable: Any
+    schema: type[BaseModel]
+    method: str
+
+    def prepare_prompt(self, prompt: Any) -> Any:
+        if self.method == "json_mode":
+            return _append_instruction(prompt, _json_schema_instruction(self.schema))
+        return prompt
+
+    def invoke(self, prompt: Any) -> Any:
+        return self.runnable.invoke(self.prepare_prompt(prompt))
+
+
+def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
+    """Bind a provider-native structured call with raw response visibility.
+
+    DeepSeek V4 uses JSON mode because it cannot be forced to call a schema
+    tool. Other providers keep their declared preferred method. Unsupported
+    providers return ``None`` and will fail closed at invocation time.
     """
+    model_name = _model_name(llm)
+    method = (
+        get_capabilities(model_name).preferred_structured_method
+        if model_name
+        else "function_calling"
+    )
     try:
-        return llm.with_structured_output(schema)
-    except (NotImplementedError, AttributeError) as exc:
-        logger.warning(
-            "%s: provider does not support with_structured_output (%s); "
-            "falling back to free-text generation",
-            agent_name, exc,
+        runnable = llm.with_structured_output(
+            schema,
+            method=method,
+            include_raw=True,
         )
+        return StructuredBinding(runnable=runnable, schema=schema, method=method)
+    except (NotImplementedError, AttributeError) as exc:
+        logger.error("%s: provider does not support structured output (%s)", agent_name, exc)
         return None
 
 
@@ -64,13 +131,7 @@ def invoke_structured_or_freetext(
     render: Callable[[T], str],
     agent_name: str,
 ) -> str:
-    """Run the structured call and render to markdown; fall back to free-text on any failure.
-
-    ``prompt`` is whatever the underlying LLM accepts (a string for chat
-    invocations, a list of message dicts for chat models that take that
-    shape). The same value is forwarded to the free-text path so the
-    fallback sees the same input the structured call did.
-    """
+    """Compatibility wrapper: structured-only despite the legacy name."""
     return invoke_structured_with_metadata(
         structured_llm, plain_llm, prompt, render, agent_name
     ).text
@@ -83,38 +144,68 @@ def invoke_structured_with_metadata(
     render: Callable[[T], str],
     agent_name: str,
 ) -> StructuredInvocationResult:
-    """Invoke an agent and preserve whether structured output succeeded."""
-    parse_error: Exception | None = None
-    if structured_llm is not None:
+    """Require a schema-valid result, retrying structured output once.
+
+    There is deliberately no free-text fallback. A non-structured answer must
+    never flow into downstream decision nodes as if it had passed validation.
+    """
+    del plain_llm  # retained in the signature for call-site compatibility
+    if structured_llm is None:
+        raise StructuredOutputError(
+            f"{agent_name}: structured output is unavailable for this provider"
+        )
+
+    last_error: Exception | None = None
+    base_prompt = prompt
+    for attempt in range(1, _MAX_STRUCTURED_ATTEMPTS + 1):
+        attempt_prompt = base_prompt
+        if attempt > 1:
+            detail = str(last_error or "unknown validation failure")
+            attempt_prompt = _append_instruction(
+                base_prompt,
+                "CORRECTION REQUIRED: The previous response did not satisfy the "
+                f"structured output contract ({detail[:500]}). Return the complete "
+                "schema-valid object now; do not omit required fields.",
+            )
         try:
-            result = structured_llm.invoke(prompt)
+            raw_result = structured_llm.invoke(attempt_prompt)
+            result = raw_result
+            parsing_error = None
+            if (
+                isinstance(raw_result, dict)
+                and {"raw", "parsed", "parsing_error"}.issubset(raw_result)
+            ):
+                result = raw_result.get("parsed")
+                parsing_error = raw_result.get("parsing_error")
+            if parsing_error is not None:
+                raise StructuredOutputError(
+                    f"structured output validation failed: {parsing_error}"
+                )
             if result is None:
-                # A thinking model can answer in plain text instead of calling
-                # the tool, leaving the parser with nothing to return. Treat it
-                # as a structured miss and fall back, with a clear reason.
-                raise ValueError("structured output returned no parsed result")
+                raise StructuredOutputError("structured output returned no parsed result")
+            if not isinstance(result, BaseModel):
+                raise StructuredOutputError(
+                    f"structured output returned {type(result).__name__}, expected Pydantic model"
+                )
             return StructuredInvocationResult(
                 text=render(result),
                 mode="STRUCTURED",
                 agent_name=agent_name,
                 schema_name=type(result).__name__,
+                attempts=attempt,
                 parsed=result.model_dump(mode="json"),
             )
         except Exception as exc:
-            parse_error = exc
+            last_error = exc
             logger.warning(
-                "%s: structured-output invocation failed (%s); retrying once as free text",
-                agent_name, exc,
+                "%s: structured-output attempt %d/%d failed (%s)",
+                agent_name,
+                attempt,
+                _MAX_STRUCTURED_ATTEMPTS,
+                exc,
             )
 
-    response = plain_llm.invoke(prompt)
-    error_code = type(parse_error).__name__ if parse_error else "STRUCTURED_UNAVAILABLE"
-    return StructuredInvocationResult(
-        text=str(response.content or ""),
-        mode="FALLBACK_UNSTRUCTURED",
-        agent_name=agent_name,
-        schema_name="unknown",
-        attempts=2 if parse_error else 1,
-        parse_error_code=error_code,
-        parse_error=str(parse_error) if parse_error else None,
-    )
+    raise StructuredOutputError(
+        f"{agent_name}: failed to produce schema-valid output after "
+        f"{_MAX_STRUCTURED_ATTEMPTS} attempts: {last_error}"
+    ) from last_error

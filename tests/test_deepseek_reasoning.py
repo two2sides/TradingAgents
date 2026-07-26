@@ -5,10 +5,8 @@ Two pieces verified:
 1. ``reasoning_content`` is captured on receive into the AIMessage's
    ``additional_kwargs`` and re-attached on send so DeepSeek's API
    sees the same value across turns.
-2. ``with_structured_output`` consults the capability table and
-   suppresses ``tool_choice`` for models that reject it (V4 + reasoner),
-   matching DeepSeek's official tool-calling pattern at
-   https://api-docs.deepseek.com/guides/tool_calls.
+2. ``with_structured_output`` consults the capability table and uses JSON
+   mode for V4/reasoner models that cannot be forced to call a schema tool.
 """
 
 import os
@@ -116,7 +114,7 @@ class TestDeepSeekReasoningContent:
 
 
 # ---------------------------------------------------------------------------
-# Capability-driven structured output: tool_choice suppressed for V4 + reasoner
+# Capability-driven structured output: JSON mode for V4 + reasoner
 # ---------------------------------------------------------------------------
 
 
@@ -128,10 +126,7 @@ def _bound_kwargs(runnable):
 
 @pytest.mark.unit
 class TestStructuredOutputCapabilityDispatch:
-    """DeepSeek V4 and reasoner reject the tool_choice parameter
-    (official guide: api-docs.deepseek.com/guides/tool_calls passes
-    tools=[...] without tool_choice). Verify the capability dispatch
-    suppresses tool_choice for those models and sends it for chat."""
+    """Thinking models use JSON mode; legacy chat keeps function calling."""
 
     class _Sample(BaseModel):
         answer: str
@@ -145,38 +140,31 @@ class TestStructuredOutputCapabilityDispatch:
         bound = self._client("deepseek-chat").with_structured_output(self._Sample)
         assert _bound_kwargs(bound).get("tool_choice") is not None
 
-    def test_reasoner_suppresses_tool_choice(self):
+    def test_reasoner_uses_json_mode(self):
         bound = self._client("deepseek-reasoner").with_structured_output(self._Sample)
-        # tool_choice is either absent or explicitly None — both are valid
-        # signals that langchain's bind_tools will skip the parameter.
-        assert _bound_kwargs(bound).get("tool_choice") in (None, ...) or \
-            "tool_choice" not in _bound_kwargs(bound)
+        assert _bound_kwargs(bound)["response_format"] == {"type": "json_object"}
+        assert "tools" not in _bound_kwargs(bound)
 
-    def test_v4_flash_suppresses_tool_choice(self):
+    def test_v4_flash_uses_json_mode(self):
         bound = self._client("deepseek-v4-flash").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
+        assert _bound_kwargs(bound)["response_format"] == {"type": "json_object"}
+        assert "tools" not in _bound_kwargs(bound)
 
-    def test_v4_pro_suppresses_tool_choice(self):
+    def test_v4_pro_uses_json_mode(self):
         bound = self._client("deepseek-v4-pro").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
+        assert _bound_kwargs(bound)["response_format"] == {"type": "json_object"}
+        assert "tools" not in _bound_kwargs(bound)
 
     def test_future_v_variant_via_regex(self):
-        """Forward-compat: unknown deepseek-v\\d-* IDs inherit V4 quirks."""
+        """Forward-compat: unknown deepseek-v\\d-* IDs inherit JSON mode."""
         bound = self._client("deepseek-v5-hypothetical").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
+        assert _bound_kwargs(bound)["response_format"] == {"type": "json_object"}
 
-    def test_schema_is_still_bound_as_tool(self):
-        """tool_choice is suppressed, but the schema is still bound as a tool —
-        exactly matching DeepSeek's official tool-calling examples."""
+    def test_thinking_model_does_not_bind_schema_as_tool(self):
         bound = self._client("deepseek-reasoner").with_structured_output(self._Sample)
         kwargs = _bound_kwargs(bound)
-        tools = kwargs.get("tools", [])
-        assert any(
-            t.get("function", {}).get("name") == "_Sample" for t in tools
-        ), f"schema not bound as a tool: {tools}"
+        assert kwargs["response_format"] == {"type": "json_object"}
+        assert "tools" not in kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +185,7 @@ def _has_real_deepseek_key():
 class TestDeepSeekLiveStructuredOutput:
     """End-to-end: a real DeepSeek V4-flash call returns a typed instance.
 
-    Verifies the no-tool_choice path doesn't trigger the 400 reported in
-    issue #678 and that the structured-output binding still parses to a
+    Verifies JSON mode plus the explicit schema instruction parses to a
     Pydantic instance.
     """
 
@@ -213,11 +200,20 @@ class TestDeepSeekLiveStructuredOutput:
             base_url="https://api.deepseek.com",
             timeout=60,
         )
-        bound = client.with_structured_output(self._Pick)
-        result = bound.invoke(
-            "Pick BUY or SELL or HOLD for a tech stock with strong earnings. "
-            "Confidence is a float between 0 and 1."
+        from tradingagents.agents.utils.structured import (
+            bind_structured,
+            invoke_structured_with_metadata,
         )
+
+        bound = bind_structured(client, self._Pick, "test")
+        invocation = invoke_structured_with_metadata(
+            bound,
+            client,
+            "Pick BUY or SELL or HOLD for a tech stock with strong earnings.",
+            lambda result: result.action,
+            "test",
+        )
+        result = self._Pick.model_validate(invocation.parsed)
         assert isinstance(result, self._Pick)
         assert result.action in {"BUY", "SELL", "HOLD"}
         assert 0.0 <= result.confidence <= 1.0

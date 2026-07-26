@@ -55,7 +55,12 @@ _DEEPSEEK_THINKING = ModelCapabilities(
     supports_tool_choice=False,
     supports_json_mode=True,
     supports_json_schema=False,
-    preferred_structured_method="function_calling",
+    # V4 thinking models cannot be forced to call a schema tool because they
+    # reject ``tool_choice``.  Using function_calling therefore lets the model
+    # answer in plain text, which LangChain parses as ``None``.  DeepSeek's
+    # native JSON mode constrains the final ``content`` instead and is the
+    # reliable structured-output path for these models.
+    preferred_structured_method="json_mode",
     requires_reasoning_content_roundtrip=True,
 )
 

@@ -60,7 +60,7 @@ def render_metric_grid(metrics: list[dict[str, Any]]) -> None:
             </article>
             """
         )
-    st.markdown(f'<div class="ta-metric-grid">{"".join(cards)}</div>', unsafe_allow_html=True)
+    st.html(f'<div class="ta-metric-grid">{"".join(cards)}</div>')
 
 
 def render_badges(items: list[tuple[str, str]]) -> None:

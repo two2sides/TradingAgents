@@ -79,3 +79,29 @@ def test_render_appendix_includes_table():
     assert "VI. 附录" in md
     assert "price_volume.png" in md
     assert "Alpha" in md
+
+
+@patch("tradingagents.report_appendix.build_appendix_stats")
+@patch("tradingagents.report_appendix.render_price_volume_chart", return_value=None)
+def test_write_report_appendix_prefers_frozen_runtime_stats(
+    mock_chart, mock_build, tmp_path
+):
+    state = {
+        "run_id": "run-frozen",
+        "trade_date": "2024-06-01",
+        "appendix_stats": {
+            "symbol": "AAPL",
+            "trade_date": "2024-06-01",
+            "scorecard": {"features": {}, "multi_horizon": {"horizons": {}}},
+            "benchmark": {"windows": {}},
+            "drawdown": {},
+        },
+        "audit_events": [],
+    }
+
+    md, stats = write_report_appendix(state, "AAPL", tmp_path)
+
+    mock_build.assert_not_called()
+    assert stats["_audit_provenance"] == "runtime_snapshot"
+    assert "运行期间冻结" in md
+    assert state["audit_events"][0]["payload"]["post_run_recomputed"] is False

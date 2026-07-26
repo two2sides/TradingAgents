@@ -144,6 +144,7 @@ class AuditProfile(BaseModel):
     metric_counts: dict[str, Any] = Field(default_factory=dict)
     critical_findings: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    advisories: list[str] = Field(default_factory=list)
 
 
 def stable_id(prefix: str, payload: Any) -> str:

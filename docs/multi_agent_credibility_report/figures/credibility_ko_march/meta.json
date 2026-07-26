@@ -1,0 +1,34 @@
+{
+  "run_id": "8d06aa833caa4022a048b6046a41acaf",
+  "sample_day": "2024-03-18",
+  "summary": {
+    "run_id": "8d06aa833caa4022a048b6046a41acaf",
+    "label": "DATA2-KO-MARCH",
+    "n_decisions": 20,
+    "n_success": 20,
+    "n_failed_safe": 0,
+    "n_profiles": 20,
+    "total_return": -0.005119968874500058,
+    "bh_return": 0.019317990928943374,
+    "alpha": -0.024437959803443432,
+    "max_drawdown": -0.011811436186838442,
+    "turnover": 1.9982412944679917,
+    "total_fees": 99.93886744999999,
+    "audit_counts": {
+      "AUDIT_FAILED": 5,
+      "AUDIT_DEGRADED": 15
+    },
+    "evidence_coverage_mean": 0.43743499999999996,
+    "critical_findings": 16,
+    "warning_findings": 665
+  },
+  "figures": [
+    "fig_cred_ko_mar_01_overview.png",
+    "fig_cred_ko_mar_02_audit_status.png",
+    "fig_cred_ko_mar_03_evidence_coverage.png",
+    "fig_cred_ko_mar_04_findings.png",
+    "fig_cred_ko_mar_05_profile_dims.png",
+    "fig_cred_ko_mar_06_sample_day.png",
+    "fig_cred_ko_mar_07_rating_weight.png"
+  ]
+}

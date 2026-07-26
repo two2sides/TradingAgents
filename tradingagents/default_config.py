@@ -1,6 +1,8 @@
 import os
 
-_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+# Keep runtime artifacts inside the repo by default (not under the user home).
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_TRADINGAGENTS_HOME = os.path.join(_REPO_ROOT, "local_data")
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no

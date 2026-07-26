@@ -6,11 +6,14 @@ CLI and ``TradingAgentsGraph.save_reports`` both call this, so a headless / API
 run produces the same on-disk report tree a CLI run does.
 """
 
+import logging
 from datetime import datetime
 from pathlib import Path
 
 from tradingagents.report_appendix import write_report_appendix
 from tradingagents.extensions.decision.credibility.audit_writer import write_audit_bundle
+
+logger = logging.getLogger(__name__)
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
@@ -114,7 +117,35 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     if appendix_md:
         sections.append(appendix_md)
 
-    credibility_md, audit_profile = write_audit_bundle(final_state, ticker, save_path)
+    try:
+        credibility_md, audit_profile = write_audit_bundle(
+            final_state, ticker, save_path
+        )
+    except Exception as exc:
+        logger.exception(
+            "Credibility audit write failed; preserving the completed report for %s",
+            ticker,
+        )
+        audit_profile = {
+            "run_id": final_state.get("run_id", "unknown-run"),
+            "status": "AUDIT_DEGRADED",
+            "audit_scope": "PARTIAL",
+            "audit_scope_reasons": [
+                f"audit persistence failed: {type(exc).__name__}: {exc}"
+            ],
+            "metric_counts": {},
+            "critical_findings": [],
+            "warnings": ["AUDIT_PERSISTENCE_ERROR"],
+            "advisories": [
+                "审计文件写入失败；原始 Portfolio Manager 决策与报告正文仍被保留。"
+            ],
+        }
+        credibility_md = (
+            "## VII. 可信度审计（不修改 Portfolio Manager Rating）\n\n"
+            "- **审计状态**: `AUDIT_DEGRADED`\n"
+            "- 审计文件写入失败；该问题不改变原始交易结论。\n"
+            f"- 错误: `{type(exc).__name__}: {exc}`"
+        )
     final_state["audit_profile"] = audit_profile
     if credibility_md:
         sections.append(credibility_md)

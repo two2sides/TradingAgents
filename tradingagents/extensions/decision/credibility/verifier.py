@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from .rules import (
@@ -17,9 +18,10 @@ def _dedupe(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     result = []
     for item in items:
         value = item.get(key)
-        if value in seen:
+        if value is not None and value in seen:
             continue
-        seen.add(value)
+        if value is not None:
+            seen.add(value)
         result.append(item)
     return result
 
@@ -30,15 +32,18 @@ def run_verifier(final_state: dict[str, Any]) -> tuple[list[dict], list[dict], l
     unique_events = []
     for event in final_state.get("audit_events") or []:
         event_id = (event.get("payload") or {}).get("event_id")
-        if event_id in event_seen:
+        if event_id is not None and event_id in event_seen:
             continue
-        event_seen.add(event_id)
-        unique_events.append(event)
+        if event_id is not None:
+            event_seen.add(event_id)
+        unique_events.append(copy.deepcopy(event))
     events = unique_events
 
-    claims = _dedupe(list(final_state.get("claims") or []), "claim_id")
-    invocations = list(final_state.get("structured_invocations") or [])
-    snapshots = _dedupe(list(final_state.get("decision_snapshots") or []), "snapshot_id")
+    claims = _dedupe(copy.deepcopy(list(final_state.get("claims") or [])), "claim_id")
+    invocations = copy.deepcopy(list(final_state.get("structured_invocations") or []))
+    snapshots = _dedupe(
+        copy.deepcopy(list(final_state.get("decision_snapshots") or [])), "snapshot_id"
+    )
 
     findings = []
     findings.extend(check_source_rules(claims, events))
@@ -64,8 +69,6 @@ def run_verifier(final_state: dict[str, Any]) -> tuple[list[dict], list[dict], l
             claim["verification_status"] = "CONTRADICTED"
         elif claim.get("claim_id") in unsourced:
             claim["verification_status"] = "UNSOURCED"
-        elif claim.get("evidence_refs"):
-            claim["verification_status"] = "SUPPORTED"
-        elif claim.get("claim_type") in {"CAUSAL", "FORECAST", "OPINION"}:
+        elif claim.get("claim_type") not in {"NUMERIC", "DATE"}:
             claim["verification_status"] = "NOT_DETERMINISTICALLY_VERIFIABLE"
     return events, claims, findings

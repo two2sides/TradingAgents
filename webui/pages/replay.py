@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from tradingagents.extensions.contracts import ExecutionConfig
+from tradingagents.extensions.decision.credibility.profile import build_audit_profile
+from tradingagents.extensions.decision.credibility.verifier import run_verifier
 from tradingagents.extensions.paper_trading import (
     BacktestApplicationService,
     build_decision_replay,
@@ -35,6 +38,16 @@ from webui.state import get_run_store, select_run, selected_run_id
 
 logger = logging.getLogger(__name__)
 
+_AUDIT_METRICS = (
+    ("evidence_coverage", "证据覆盖"),
+    ("numeric_verification_rate", "数值核验"),
+    ("temporal_integrity", "时间完整性"),
+    ("tool_success_rate", "工具可用性"),
+    ("structured_output_integrity", "结构化输出"),
+    ("handoff_explanation_coverage", "交接解释"),
+    ("debate_novelty_rate", "辩论新颖性"),
+)
+
 
 def _tone(status: str) -> str:
     return {
@@ -46,6 +59,87 @@ def _tone(status: str) -> str:
         "FAILED_SAFE": "failed",
         "REJECTED": "failed",
     }.get(status, "cyan")
+
+
+def _audit_tone(status: str) -> str:
+    return {
+        "AUDIT_PASSED": "success",
+        "AUDIT_DEGRADED": "degraded",
+        "AUDIT_FAILED": "failed",
+    }.get(status, "cyan")
+
+
+def _audit_metric_cards(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    counts_by_metric = profile.get("metric_counts") or {}
+    cards = []
+    for key, label in _AUDIT_METRICS:
+        value = profile.get(key)
+        counts = counts_by_metric.get(key) or {}
+        failed = int(counts.get("failed_count") or 0)
+        unknown = int(counts.get("unknown_count") or 0)
+        eligible = int(counts.get("eligible_count") or 0)
+        supported = int(counts.get("supported_count") or 0)
+        excluded = int(counts.get("excluded_count") or 0)
+        if value is None:
+            tone = "neutral"
+        elif failed:
+            tone = "negative"
+        elif unknown or value < 1:
+            tone = "amber"
+        else:
+            tone = "positive"
+        cards.append(
+            {
+                "label": label,
+                "value": "N/A" if value is None else f"{float(value):.1%}",
+                "delta": (
+                    f"通过 {supported}/{eligible} · 排除 {excluded} · 未知 {unknown}"
+                ),
+                "tone": tone,
+            }
+        )
+    return cards
+
+
+def _render_run_credibility_summary(result) -> None:
+    profiles = [
+        (item.diagnostics or {}).get("audit_profile")
+        for item in result.decisions
+        if isinstance((item.diagnostics or {}).get("audit_profile"), dict)
+    ]
+    if not profiles:
+        return
+    status_counts = Counter(str(profile.get("status") or "UNKNOWN") for profile in profiles)
+    render_badges(
+        [
+            ("可信度审计仅提供建议，不改变交易执行", "cyan"),
+            (f"已画像 {len(profiles)}/{len(result.decisions)}", "green"),
+        ]
+    )
+    render_metric_grid(
+        [
+            {
+                "label": "审计通过",
+                "value": status_counts.get("AUDIT_PASSED", 0),
+                "tone": "positive",
+            },
+            {
+                "label": "建议改进",
+                "value": status_counts.get("AUDIT_DEGRADED", 0),
+                "tone": "amber",
+            },
+            {
+                "label": "需优先复核",
+                "value": status_counts.get("AUDIT_FAILED", 0),
+                "tone": "negative",
+            },
+            {
+                "label": "无画像",
+                "value": len(result.decisions) - len(profiles),
+                "tone": "neutral",
+            },
+        ]
+    )
 
 
 def _selected_decision_from_chart(event: Any) -> str | None:
@@ -97,6 +191,7 @@ def _render_overview(result) -> None:
             width="stretch",
             config={"displaylogo": False},
         )
+    _render_run_credibility_summary(result)
 
 
 def _render_portfolio(portfolio, title: str) -> None:
@@ -257,8 +352,9 @@ def _render_decision_audit(result) -> None:
         _render_portfolio(item.portfolio_before, "Portfolio before")
         _render_portfolio(item.portfolio_after, "Portfolio after")
 
-    memory_tab, dossier_tab, trace_tab, ledger_tab, diagnostics_tab = st.tabs(
+    credibility_tab, memory_tab, dossier_tab, trace_tab, ledger_tab, diagnostics_tab = st.tabs(
         [
+            "可信度建议",
             "Retrieved memory",
             "Agent dossier",
             "Agent trace",
@@ -268,6 +364,9 @@ def _render_decision_audit(result) -> None:
         key=f"decision-evidence-{intent.decision_id}",
         on_change="rerun",
     )
+    if credibility_tab.open:
+        with credibility_tab:
+            _render_credibility(decision)
     if memory_tab.open:
         with memory_tab:
             if item.memory is None:
@@ -282,6 +381,14 @@ def _render_decision_audit(result) -> None:
                             )
                 else:
                     st.caption("No time-safe prior outcomes were available at this point.")
+                provenance = (decision.diagnostics or {}).get("memory_provenance") or []
+                if provenance:
+                    st.markdown("**Memory provenance**")
+                    st.dataframe(
+                        pd.DataFrame(provenance),
+                        hide_index=True,
+                        width="stretch",
+                    )
     if dossier_tab.open:
         with dossier_tab:
             _render_agent_dossier(decision)
@@ -314,6 +421,221 @@ def _render_decision_audit(result) -> None:
     if diagnostics_tab.open:
         with diagnostics_tab:
             st.json(decision.diagnostics or {"message": "No diagnostics emitted."})
+
+
+def _render_credibility(decision) -> None:
+    diagnostics = decision.diagnostics or {}
+    profile, findings, claims, rebuilt = _resolve_credibility_view(decision)
+    if not isinstance(profile, dict):
+        error = diagnostics.get("audit_error")
+        if error:
+            render_callout(
+                "可信度画像暂不可用",
+                f"审计投影发生错误：{error}。原始交易结论和执行保持不变。",
+                tone="red",
+            )
+        else:
+            render_callout(
+                "旧运行暂无可信度画像",
+                "该决策仍可查看原始 Claims、Audit events 与 Diagnostics；"
+                "重新运行后会生成完整画像。交易执行不受影响。",
+                tone="cyan",
+            )
+        return
+
+    status = str(profile.get("status") or "UNKNOWN")
+    scope = str(profile.get("audit_scope") or "UNKNOWN")
+    render_badges(
+        [
+            (status, _audit_tone(status)),
+            (f"SCOPE {scope}", "amber" if scope == "PARTIAL" else "green"),
+            ("ADVISORY ONLY", "cyan"),
+            ("PM RATING UNCHANGED", "green"),
+            *(([("REBUILT FROM STORED DIAGNOSTICS", "amber")]) if rebuilt else []),
+        ]
+    )
+    render_callout(
+        "如何理解",
+        "这里衡量证据、时间、结构化输出与交接完整性，不是上涨概率，"
+        "不会自动阻止交易、改变仓位或覆盖 Portfolio Manager Rating。",
+        tone="cyan",
+    )
+    render_metric_grid(_audit_metric_cards(profile))
+
+    advisories = [str(item) for item in profile.get("advisories") or [] if item]
+    st.markdown("#### 改进建议")
+    if advisories:
+        for advisory in advisories:
+            st.markdown(f"- {advisory}")
+    else:
+        st.success("当前适用规则没有生成额外改进建议。")
+
+    st.markdown("#### 核验发现")
+    if findings:
+        severity_counts = Counter(
+            str(item.get("severity") or "UNKNOWN") for item in findings
+        )
+        render_badges(
+            [
+                (f"CRITICAL {severity_counts.get('CRITICAL', 0)}", "red"),
+                (f"WARNING {severity_counts.get('WARNING', 0)}", "amber"),
+                (f"INFO {severity_counts.get('INFO', 0)}", "cyan"),
+            ]
+        )
+        finding_rows = []
+        for finding in findings:
+            finding_rows.append(
+                {
+                    "级别": finding.get("severity"),
+                    "规则": finding.get("code"),
+                    "阶段": finding.get("stage"),
+                    "说明": finding.get("message"),
+                    "位置": finding.get("location") or "—",
+                    "预期": _display_value(finding.get("expected")),
+                    "实际": _display_value(finding.get("actual")),
+                    "Claim ID": finding.get("claim_id") or "—",
+                    "Artifact ID": finding.get("artifact_id") or "—",
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(finding_rows),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.success("未发现适用规则能够确定识别的问题。")
+
+    snapshots = [
+        item
+        for item in diagnostics.get("decision_snapshots") or []
+        if isinstance(item, dict)
+    ]
+    if snapshots:
+        st.markdown("#### 决策交接链")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "阶段": item.get("stage"),
+                        "决策": item.get("value"),
+                        "解析成功": bool(item.get("parsed")),
+                        "与上游关系": item.get("alignment"),
+                        "上游引用": item.get("upstream_decision_ref") or "—",
+                        "改变理由": " · ".join(
+                            str(ref) for ref in item.get("change_reason_refs") or []
+                        )
+                        or "—",
+                    }
+                    for item in snapshots
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+
+    important_claims = [
+        item
+        for item in claims
+        if item.get("importance") in {"CRITICAL", "MAJOR"}
+    ]
+    if important_claims:
+        claim_expander = st.expander(
+            f"关键主张与证据定位（{len(important_claims)}）",
+            expanded=False,
+            icon=":material/account_tree:",
+        )
+        if claim_expander.open:
+            with claim_expander:
+                rows = []
+                for claim in important_claims[:200]:
+                    refs = claim.get("evidence_refs") or []
+                    rows.append(
+                        {
+                            "状态": claim.get("verification_status"),
+                            "Agent": claim.get("agent"),
+                            "阶段": claim.get("stage"),
+                            "类型": claim.get("claim_type"),
+                            "主张": claim.get("text"),
+                            "证据数": len(refs),
+                            "证据定位": " · ".join(
+                                f"{ref.get('artifact_id')}#{ref.get('selector') or '/'}"
+                                for ref in refs
+                                if isinstance(ref, dict)
+                            )
+                            or "—",
+                        }
+                    )
+                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+                if len(important_claims) > 200:
+                    st.caption("为保持界面流畅，仅显示前 200 条关键主张。")
+
+
+def _resolve_credibility_view(
+    decision,
+) -> tuple[dict[str, Any] | None, list[dict], list[dict], bool]:
+    """Return persisted audit views, or rebuild legacy views without writing data."""
+
+    diagnostics = decision.diagnostics or {}
+    profile = diagnostics.get("audit_profile")
+    findings = [
+        item for item in diagnostics.get("audit_findings") or [] if isinstance(item, dict)
+    ]
+    claims = [
+        item for item in diagnostics.get("claims") or [] if isinstance(item, dict)
+    ]
+    if isinstance(profile, dict):
+        return profile, findings, claims, False
+    if not any(
+        diagnostics.get(key)
+        for key in (
+            "audit_events",
+            "claims",
+            "structured_invocations",
+            "decision_snapshots",
+        )
+    ):
+        return None, findings, claims, False
+
+    reports = diagnostics.get("agent_reports") or {}
+    final_state = {
+        "run_id": diagnostics.get("run_id")
+        or decision.intent.metadata.get("graph_run_id")
+        or decision.intent.decision_id,
+        "trade_date": diagnostics.get("trade_date")
+        or decision.intent.as_of.date().isoformat(),
+        "audit_events": diagnostics.get("audit_events") or [],
+        "claims": claims,
+        "structured_invocations": diagnostics.get("structured_invocations") or [],
+        "decision_snapshots": diagnostics.get("decision_snapshots") or [],
+        "investment_debate_state": {
+            "debate_turns": diagnostics.get("debate_turns") or []
+        },
+        "market_report": reports.get("market") if isinstance(reports, dict) else "",
+        "news_report": reports.get("news") if isinstance(reports, dict) else "",
+        "fundamentals_report": (
+            reports.get("fundamentals") if isinstance(reports, dict) else ""
+        ),
+    }
+    try:
+        events, audited_claims, audited_findings = run_verifier(final_state)
+        rebuilt_profile = build_audit_profile(
+            final_state, events, audited_claims, audited_findings
+        ).model_dump(mode="json")
+    except Exception:
+        logger.exception(
+            "Could not rebuild credibility view for %s",
+            decision.intent.decision_id,
+        )
+        return None, findings, claims, False
+    return rebuilt_profile, audited_findings, audited_claims, True
+
+
+def _display_value(value: Any) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
 
 
 def _render_agent_dossier(decision) -> None:

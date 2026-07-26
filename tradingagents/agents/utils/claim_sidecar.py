@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from tradingagents.agents.schemas import AnalystClaimEnvelope
-from tradingagents.agents.utils.structured import invoke_structured_with_metadata
+from tradingagents.agents.utils.structured import (
+    bind_structured,
+    invoke_structured_with_metadata,
+)
 from tradingagents.extensions.decision.credibility.claims import claims_from_invocation
-from tradingagents.extensions.decision.credibility.models import StructuredInvocationResult
 
 
 def build_claim_sidecar(
@@ -41,26 +43,19 @@ def build_claim_sidecar(
         "fact, causal statement, forecast and opinion. If no artifact ID is shown, "
         "leave evidence_refs empty and disclose the uncertainty.\n\n"
         "Use evidence_refs entries in the form artifact_id#/json/pointer when a "
-        "specific JSON field supports the claim. Do not cite an artifact merely "
-        "because it is topically related.\n\n"
+        "specific JSON field supports the claim. Never use a bare artifact_id or "
+        "artifact_id#/ alone for numeric or date claims — always include a concrete "
+        "field path such as #/features/ret_20 or #/windows/20d/alpha. Do not cite an "
+        "artifact merely because it is topically related.\n\n"
         f"ARTIFACT CATALOG:\n{artifact_catalog}\n\nDRAFT:\n{draft}"
     )
-    if structured_llm is None:
-        invocation = StructuredInvocationResult(
-            text=draft,
-            mode="FALLBACK_UNSTRUCTURED",
-            agent_name=f"{agent_name} Claim Sidecar",
-            schema_name="AnalystClaimEnvelope",
-            parse_error_code="STRUCTURED_UNAVAILABLE",
-        )
-    else:
-        invocation = invoke_structured_with_metadata(
-            structured_llm,
-            plain_llm,
-            prompt,
-            lambda _envelope: draft,
-            f"{agent_name} Claim Sidecar",
-        )
+    invocation = invoke_structured_with_metadata(
+        structured_llm,
+        plain_llm,
+        prompt,
+        lambda _envelope: draft,
+        f"{agent_name} Claim Sidecar",
+    )
     claims = claims_from_invocation(
         run_id=state.get("run_id", "legacy-run"),
         agent=agent_name,
@@ -87,7 +82,4 @@ def append_claim_index(draft: str, claims: list[dict]) -> str:
 
 
 def bind_claim_sidecar(llm, agent_name: str):
-    try:
-        return llm.with_structured_output(AnalystClaimEnvelope)
-    except (NotImplementedError, AttributeError):
-        return None
+    return bind_structured(llm, AnalystClaimEnvelope, f"{agent_name} Claim Sidecar")
